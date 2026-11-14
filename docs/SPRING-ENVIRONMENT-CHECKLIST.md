@@ -26,3 +26,11 @@
 - Spring 큐 claim의 단일 워커·재시작·중복 claim 검증
 - 운영 인증 계층 도입 후 `X-Baromi-Owner` 제거
 - Compose 기동 후 `/actuator/health`와 워커 상태 콜백 실환경 확인
+
+## 로컬 통합 검증 기록
+
+- 2026-11-15: 별도 Compose 프로젝트 `baromi-integration`에서 PostgreSQL 16과 Spring 컨테이너를 새 볼륨으로 기동
+- Flyway 적용 후 `/api/v1/health`와 `/api/v1/health/readiness` 정상 확인
+- 상점 등록 → 진단 생성 → `POST /api/v1/scans/claim`의 `queued → running` 전환 정상 확인
+- 검증 컨테이너는 중지했으며 기존 데이터·볼륨은 삭제하지 않음
+- 이 기록은 로컬 통합 검증이며, 실제 운영 PostgreSQL 배포 검증 완료를 의미하지 않음
