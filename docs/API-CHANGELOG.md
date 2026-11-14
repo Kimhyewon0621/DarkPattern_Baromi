@@ -10,6 +10,13 @@
 - 현재 변경: 백엔드 기능 작업 브랜치와 프론트 연동 명세 브랜치를 분리
 - 영향 endpoint: 없음
 
+### Spring 상태 응답 정규화
+
+- 변경: `GET /api/v1/scans/:scanId`와 `/report`가 Spring의 소문자 상태(`queued`, `running`, `succeeded` 등)를 프론트 계약의 대문자 상태로 정규화한다.
+- 매핑: `succeeded → COMPLETED`, `queued → QUEUED`, `running → RUNNING`, `partial → PARTIAL`, `failed → FAILED`, `cancelled → CANCELLED`
+- 프론트 영향: 상태 비교를 별도 분기하지 않아도 기존 `ScanState` 계약을 그대로 사용한다.
+- 관련 브랜치: `backend`
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.

@@ -22,6 +22,14 @@ type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenari
 const cookie = "darkpattern-session";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const error = (message: string, status: number) => Response.json({ error: message }, { status });
+const normalizeScanStatus = (value: unknown) => {
+  if (typeof value !== "string") return value;
+  const normalized: Record<string, string> = {
+    queued: "QUEUED", running: "RUNNING", partial: "PARTIAL", succeeded: "COMPLETED",
+    completed: "COMPLETED", failed: "FAILED", cancelled: "CANCELLED",
+  };
+  return normalized[value.toLowerCase()] ?? value.toUpperCase();
+};
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
 const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: number) => {
@@ -327,12 +335,13 @@ export async function GET(request: NextRequest, context: Context) {
       return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503);
     }
     if (spring) {
+      const normalizedStatus = normalizeScanStatus(spring.status);
       if (action === "report") {
-        return Response.json({ ...spring, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
+        return Response.json({ ...spring, status: normalizedStatus, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
           headers: { "Cache-Control": "private, no-store" },
         });
       }
-      return Response.json({ ...spring, source: "SPRING_POSTGRES", progress: spring.status === "queued" || spring.status === "running" ? 0 : 100 }, {
+      return Response.json({ ...spring, status: normalizedStatus, source: "SPRING_POSTGRES", progress: normalizedStatus === "QUEUED" || normalizedStatus === "RUNNING" ? 0 : 100 }, {
         headers: { "Cache-Control": "private, no-store" },
       });
     }
