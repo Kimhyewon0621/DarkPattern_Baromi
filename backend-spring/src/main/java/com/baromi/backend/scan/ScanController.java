@@ -69,7 +69,7 @@ public class ScanController {
  public record CreateScanRequest(String id, String shopId, String targetUrl, String executionMode, String viewport, String purchasePath) {}
  public record StatusRequest(String status, String stage, String reportJson) {}
  public record RecoverRequest(Instant staleBefore) {}
- private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); return body; }
+ private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("shopId",scan.getShopId()); body.put("targetUrl",scan.getTargetUrl()); body.put("executionMode",scan.getExecutionMode()); body.put("viewport",scan.getViewport()); body.put("purchasePath",scan.getPurchasePath()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); return body; }
  private static boolean isAllowed(String status){return switch(status){case "queued","running","partial","succeeded","failed","cancelled" -> true; default -> false;};}
  private static boolean canTransition(String from,String to){
   if(from.equals(to)) return true;

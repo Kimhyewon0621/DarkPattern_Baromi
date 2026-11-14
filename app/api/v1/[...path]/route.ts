@@ -31,6 +31,17 @@ const normalizeScanStatus = (value: unknown) => {
   };
   return normalized[value.toLowerCase()] ?? value.toUpperCase();
 };
+const springProgress = (scan: Record<string, unknown>, status: string) => {
+  const purchasePath = scan.purchasePath === "DIRECT" ? "DIRECT" : "CART";
+  const required = purchasePath === "DIRECT" ? ["product", "checkout"] : stages;
+  const current = typeof scan.currentStage === "string" ? scan.currentStage : null;
+  const reached = current ? required.indexOf(current as never) : -1;
+  const active = status === "QUEUED" || status === "RUNNING";
+  const coveredCount = active ? Math.max(0, reached + 1) : status === "COMPLETED" || status === "PARTIAL" ? required.length : 0;
+  const coverage = Object.fromEntries(stages.map((stage) => [stage,
+    !required.includes(stage) ? "SKIPPED" : required.indexOf(stage) < coveredCount ? "COVERED" : active ? "PENDING" : "BLOCKED"]));
+  return { progress: required.length ? Math.round(coveredCount * 100 / required.length) : 0, coverage };
+};
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
 const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: number) => {
@@ -386,7 +397,8 @@ export async function GET(request: NextRequest, context: Context) {
           headers: { "Cache-Control": "private, no-store" },
         });
       }
-      return Response.json({ ...spring, status: normalizedStatus, source: "SPRING_POSTGRES", progress: normalizedStatus === "QUEUED" || normalizedStatus === "RUNNING" ? 0 : 100 }, {
+      const progress = springProgress(spring, String(normalizedStatus));
+      return Response.json({ ...spring, status: normalizedStatus, source: "SPRING_POSTGRES", ...progress }, {
         headers: { "Cache-Control": "private, no-store" },
       });
     }
