@@ -17,6 +17,7 @@ import { encryptCredentials } from "../../../../src/credential-vault";
 import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
+import { supabaseOwner } from "../../../../src/supabase-auth";
 
 type Context = { params: Promise<{ path: string[] }> };
 type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string };
@@ -71,7 +72,8 @@ export async function POST(request: NextRequest, context: Context) {
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(demoOrigin()).origin) return error("동일 출처 요청이 필요합니다.", 403);
   const body = await request.json().catch(() => null);
-  const session = request.cookies.get(cookie)?.value;
+  const jwtOwner = supabaseOwner(request);
+  const session = jwtOwner ?? request.cookies.get(cookie)?.value;
 
   if (route.join("/") === "shops") {
     const limited = rateLimit(request, "shops", 20, 60 * 60 * 1000);
@@ -98,7 +100,7 @@ export async function POST(request: NextRequest, context: Context) {
       await db().shop.delete({ where: { id: shop.id } }).catch(() => undefined);
       return error("최종 상태 저장소에 연결할 수 없어 상점을 등록하지 못했습니다.", 503);
     }
-    if (!session) response.cookies.set(cookie, token, {
+    if (!session && !jwtOwner) response.cookies.set(cookie, token, {
       httpOnly: true, sameSite: "strict", path: "/", maxAge: 24 * 60 * 60,
       secure: request.nextUrl.protocol === "https:",
     });
@@ -297,7 +299,7 @@ export async function GET(request: NextRequest, context: Context) {
       return error("데이터베이스를 사용할 수 없습니다.", 503);
     }
   }
-  const session = request.cookies.get(cookie)?.value;
+  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   if (!session) return notFound();
   const ownerHash = hash(session);
   if (route.join("/") === "shops") {
@@ -477,7 +479,7 @@ export async function GET(request: NextRequest, context: Context) {
 }
 
 export async function DELETE(request: NextRequest, context: Context) {
-  const session = request.cookies.get(cookie)?.value;
+  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   const route = await context.params;
   if (route.path.length === 1 && route.path[0] === "session") {
     const response = NextResponse.json({ revoked: Boolean(session) });

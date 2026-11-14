@@ -131,6 +131,13 @@
 - 프론트 영향: 기존 보고서 없음 응답을 사용하므로 UI 변경은 필요 없다.
 - 관련 테스트: `ScanControllerTest.expiredReportIsNotReturnedEvenBeforeCleanupJobRuns`.
 
+### Supabase Bearer 인증 호환 추가
+
+- 변경: `SUPABASE_JWT_SECRET`이 설정된 환경에서 API가 `Authorization: Bearer <JWT>`의 HS256 서명, `exp`, `aud`, 선택적 `iss`를 검증하고 유효한 `sub`를 상점 소유자 식별자로 사용한다.
+- 호환성: 기존 HttpOnly `darkpattern-session` 쿠키는 마이그레이션 기간 동안 그대로 지원한다. JWT 요청에는 임시 소유 쿠키를 새로 발급하지 않는다.
+- 보안: 검증 실패 토큰은 소유권 식별자로 사용하지 않으며, 서비스 키나 JWT 원문은 저장하지 않는다.
+- 프론트 영향: 기존 API 호출에 Bearer 토큰을 추가할 수 있으며 응답 형식 변경은 없다.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.
