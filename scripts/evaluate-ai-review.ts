@@ -4,8 +4,9 @@ const path = process.env.BAROMI_AI_DATASET_PATH ?? "datasets/ai-review.jsonl";
 const allowed = new Set(["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"]);
 
 async function main() {
-  const lines = (await readFile(path, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { operatorLabel?: string | null; prediction?: { label?: string; confidence?: number }; usage?: { estimatedCostUsd?: number }; durationMs?: number | null; });
-  const labeled = lines.filter((row) => row.operatorLabel && allowed.has(row.operatorLabel));
+  const lines = (await readFile(path, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { operatorLabel?: string | null; operatorAdjudication?: "PENDING" | "AGREED" | null; prediction?: { label?: string; confidence?: number }; usage?: { estimatedCostUsd?: number }; durationMs?: number | null; });
+  const labeled = lines.filter((row) => row.operatorLabel && allowed.has(row.operatorLabel) && (row.operatorAdjudication === undefined || row.operatorAdjudication === "AGREED"));
+  const pending = lines.filter((row) => row.operatorLabel && allowed.has(row.operatorLabel) && row.operatorAdjudication === "PENDING").length;
   const correct = labeled.filter((row) => row.prediction?.label === row.operatorLabel).length;
   const confidence = labeled.length ? labeled.reduce((sum, row) => sum + (row.prediction?.confidence ?? 0), 0) / labeled.length : 0;
   const cost = lines.reduce((sum, row) => sum + (row.usage?.estimatedCostUsd ?? 0), 0);
@@ -21,6 +22,7 @@ async function main() {
     path,
     rows: lines.length,
     labeled: labeled.length,
+    pendingLabels: pending,
     readyForModelSelection: labeled.length > 0,
     nextStep: labeled.length > 0 ? null : "운영자 라벨이 있는 AI 검토 레코드를 추가한 뒤 다시 평가하세요.",
     accuracy: labeled.length ? correct / labeled.length : null,
