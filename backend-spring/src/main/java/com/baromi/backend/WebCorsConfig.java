@@ -21,7 +21,7 @@ public class WebCorsConfig implements WebMvcConfigurer {
         registry.addMapping("/api/**")
             .allowedOrigins(allowedOrigins)
             .allowedMethods("GET", "POST", "PATCH", "OPTIONS")
-            .allowedHeaders("Content-Type", "X-Baromi-Owner", "X-Baromi-Worker")
+            .allowedHeaders("Content-Type", "Authorization", "X-Baromi-Owner", "X-Baromi-Worker")
             .maxAge(3600);
     }
 }
