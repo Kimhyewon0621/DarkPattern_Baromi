@@ -20,6 +20,25 @@ const springTimeoutMs = () => {
   return Number.isFinite(configured) ? Math.min(Math.max(configured, 200), 5_000) : 800;
 };
 
+async function springGet(path: string, owner: string) {
+  const base = endpoint();
+  if (!base || !owner || !springAuthoritative()) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
+  try {
+    const response = await fetch(`${base}${path}`, {
+      headers: { "x-baromi-owner": owner },
+      signal: controller.signal,
+    });
+    return response;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw new Error("Spring 상태 저장소 응답 시간 초과");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function mirrorSpringShop(shopId: string, url: string, owner: string) {
   const base = endpoint();
   if (!base || !owner) return !springAuthoritative();
@@ -97,26 +116,23 @@ export async function readSpringScan(scanId: string, owner: string, report = fal
 }
 
 export async function readSpringShop(shopId: string, owner: string) {
-  const base = endpoint();
-  if (!base || !owner || !springAuthoritative()) return null;
-  const response = await fetch(`${base}/api/v1/shops/${encodeURIComponent(shopId)}`, { headers: { "x-baromi-owner": owner }, signal: AbortSignal.timeout(springTimeoutMs()) });
+  const response = await springGet(`/api/v1/shops/${encodeURIComponent(shopId)}`, owner);
+  if (!response) return null;
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Spring shop read failed: ${response.status}`);
   return await response.json() as Record<string, unknown>;
 }
 
 export async function listSpringShops(owner: string, limit: number) {
-  const base = endpoint();
-  if (!base || !owner || !springAuthoritative()) return null;
-  const response = await fetch(`${base}/api/v1/shops?limit=${limit}`, { headers: { "x-baromi-owner": owner }, signal: AbortSignal.timeout(springTimeoutMs()) });
+  const response = await springGet(`/api/v1/shops?limit=${limit}`, owner);
+  if (!response) return null;
   if (!response.ok) throw new Error(`Spring shop list failed: ${response.status}`);
   return await response.json() as Record<string, unknown>;
 }
 
 export async function listSpringShopScans(shopId: string, owner: string, limit = 50) {
-  const base = endpoint();
-  if (!base || !owner || !springAuthoritative()) return null;
-  const response = await fetch(`${base}/api/v1/scans/shop/${encodeURIComponent(shopId)}?limit=${limit}`, { headers: { "x-baromi-owner": owner }, signal: AbortSignal.timeout(springTimeoutMs()) });
+  const response = await springGet(`/api/v1/scans/shop/${encodeURIComponent(shopId)}?limit=${limit}`, owner);
+  if (!response) return null;
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Spring scan history failed: ${response.status}`);
   const body = await response.json() as { scans?: unknown[] };
