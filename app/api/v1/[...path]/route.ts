@@ -365,6 +365,13 @@ export async function GET(request: NextRequest, context: Context) {
     }) : notFound();
   }
   if (resource !== "scans") return notFound();
+  if (springAuthoritative() && action === "findings") {
+    try {
+      const spring = await readSpringScan(id, session, true);
+      const report = spring && typeof spring.reportJson === "string" ? JSON.parse(spring.reportJson) as { findings?: unknown[] } : null;
+      if (report?.findings) return Response.json(report.findings, { headers: { "Cache-Control": "private, no-store" } });
+    } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+  }
   if (springAuthoritative() && (action === undefined || action === "report")) {
     let spring: Record<string, unknown> | null;
     try {
