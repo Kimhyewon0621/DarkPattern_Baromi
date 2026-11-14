@@ -45,6 +45,10 @@ const springProgress = (scan: Record<string, unknown>, status: string) => {
 };
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
+const hasInvalidBearer = (request: NextRequest) => {
+  const authorization = request.headers.get("authorization");
+  return Boolean(process.env.SUPABASE_JWT_SECRET && authorization?.startsWith("Bearer ") && !supabaseOwner(request));
+};
 const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: number) => {
   const address = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   const bucketKey = `${address}:${key}`;
@@ -64,6 +68,7 @@ async function getReport(path: string | null): Promise<Report | null> {
 
 export async function POST(request: NextRequest, context: Context) {
   const route = (await context.params).path;
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
   if (request.headers.get("content-type")?.split(";")[0] !== "application/json") {
     return error("JSON 요청이 필요합니다.", 415);
   }
@@ -299,6 +304,7 @@ export async function GET(request: NextRequest, context: Context) {
       return error("데이터베이스를 사용할 수 없습니다.", 503);
     }
   }
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
   const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   if (!session) return notFound();
   const ownerHash = hash(session);
@@ -479,6 +485,7 @@ export async function GET(request: NextRequest, context: Context) {
 }
 
 export async function DELETE(request: NextRequest, context: Context) {
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
   const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   const route = await context.params;
   if (route.path.length === 1 && route.path[0] === "session") {
