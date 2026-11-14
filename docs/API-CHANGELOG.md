@@ -117,6 +117,13 @@
 - 환경변수: `BAROMI_SPRING_API_URL`과 `BAROMI_SPRING_AUTHORITATIVE=true`가 필요하다. 기본값은 기존 SQLite 경로다.
 - 관련 구현: `src/spring-status.ts`, `app/api/v1/[...path]/route.ts`.
 
+### Spring 진단 진행 상태 계산 보정
+
+- 변경: `GET /api/v1/scans/:scanId`의 Spring 권위 응답이 `currentStage`와 `purchasePath`를 기준으로 `progress`와 `coverage`를 계산한다.
+- 영향: 실제로 도달한 상품 상세·장바구니·주문서는 `COVERED`로 표시되고, 아직 도달하지 않은 단계는 `PENDING`으로 남는다. 실행 중인데도 항상 0%로 보이던 문제가 제거된다.
+- 프론트 영향: 기존 `progress`·`coverage` 필드를 그대로 사용하므로 UI 변경은 필요 없다.
+- 관련 커밋: `75de331`.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.
