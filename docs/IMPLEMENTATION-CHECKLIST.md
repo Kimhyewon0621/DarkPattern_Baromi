@@ -10,6 +10,9 @@
 - [x] SQLite 전환기 저장소와 Spring 미러링
 - [x] 프론트 origin을 환경변수로 제한하는 CORS
 - [ ] 최종 인증 계층과 owner 헤더 교체
+  - [x] Supabase HS256 JWT 게이트웨이 검증 및 `sub` 소유권 연결
+  - [ ] 조직 멤버십·역할·플랜 권한 조회
+  - [ ] 전환 완료 후 임시 HttpOnly owner 쿠키와 owner 헤더 제거
 - [ ] Spring을 진단 상태의 단일 권위 저장소로 전환
   - [x] 상점 목록·상점 상세·상점별 이력 read-through
   - [x] 진단 상태·보고서·발견 목록 read-through
