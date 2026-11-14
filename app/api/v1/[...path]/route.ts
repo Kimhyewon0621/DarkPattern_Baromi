@@ -280,6 +280,17 @@ export async function GET(request: NextRequest, context: Context) {
   const session = request.cookies.get(cookie)?.value;
   if (!session) return notFound();
   const ownerHash = hash(session);
+  if (route.join("/") === "shops") {
+    const limitParam = Number(request.nextUrl.searchParams.get("limit") ?? 50);
+    const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.trunc(limitParam), 1), 100) : 50;
+    const shops = await db().shop.findMany({
+      where: { ownerHash }, orderBy: { consentAt: "desc" }, take: limit,
+      select: { id: true, url: true, consentAt: true, verifiedAt: true },
+    });
+    return Response.json({ limit, shops: shops.map((shop) => ({
+      shopId: shop.id, url: shop.url, consentAt: shop.consentAt, verifiedAt: shop.verifiedAt,
+    })) });
+  }
   const [resource, id, action, ...extra] = route;
   if (!id || extra.length) return notFound();
 

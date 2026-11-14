@@ -46,6 +46,11 @@ test("URL과 동의를 검증하고 대기 중인 진단을 중단한다", async
   expect(invalidPath.status()).toBe(400);
   const shop = await (await request.post(api + "shops", { data: { url: riskyUrl, consent: true } })).json();
   expect(shop.verification).toBeNull();
+  const shops = await request.get(api + "shops?limit=10");
+  expect(shops.status()).toBe(200);
+  expect(await shops.json()).toMatchObject({ limit: 10, shops: expect.arrayContaining([
+    expect.objectContaining({ shopId: shop.shopId, url: riskyUrl }),
+  ]) });
   const verified = await request.post(api + "shops/" + shop.shopId + "/verify", { data: {} });
   expect(verified.status()).toBe(200);
   expect((await verified.json()).verified).toBe(true);
