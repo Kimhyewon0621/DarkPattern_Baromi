@@ -135,4 +135,16 @@ class ScanControllerTest {
             .andExpect(status().isOk())
             .andExpect(jsonPath("$.limit").value(1));
     }
+
+    @Test
+    void expiredReportIsNotReturnedEvenBeforeCleanupJobRuns() throws Exception {
+        var shop = new com.baromi.backend.shop.ShopEntity("shop-expired", "https://shop.example", ShopController.ownerHashForApi("owner-1"), Instant.now());
+        var scan = new ScanEntity("scan-expired", "shop-expired", "succeeded", Instant.now());
+        scan.setReportJson("{\"findings\":[]}", Instant.now().minusSeconds(60));
+        when(shops.findByIdAndOwnerHash("shop-expired", ShopController.ownerHashForApi("owner-1"))).thenReturn(Optional.of(shop));
+        when(scans.findById("scan-expired")).thenReturn(Optional.of(scan));
+
+        mvc.perform(get("/api/v1/scans/scan-expired/report").header("X-Baromi-Owner", "owner-1"))
+            .andExpect(status().isNotFound());
+    }
 }

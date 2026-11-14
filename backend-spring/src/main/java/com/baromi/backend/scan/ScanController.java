@@ -57,7 +57,11 @@ public class ScanController {
  }
  @GetMapping("/{id}/report") public ResponseEntity<?> report(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String id){
   return scans.findById(id).filter(s->s.getShopId()!=null && shops.findByIdAndOwnerHash(s.getShopId(),ShopController.ownerHashForApi(owner)).isPresent())
-   .map(s -> s.getReportJson() == null ? ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error","진단 보고서가 아직 저장되지 않았습니다.")) : ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(s.getReportJson()))
+   .map(s -> {
+    if (s.getReportJson() == null || (s.getReportExpiresAt() != null && s.getReportExpiresAt().isBefore(Instant.now())))
+     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error","진단 보고서가 만료되었거나 아직 저장되지 않았습니다."));
+    return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(s.getReportJson());
+   })
    .orElseGet(() -> ResponseEntity.notFound().build());
  }
  @GetMapping("/shop/{shopId}") public ResponseEntity<?> listForShop(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String shopId,@RequestParam(defaultValue="50") int limit){

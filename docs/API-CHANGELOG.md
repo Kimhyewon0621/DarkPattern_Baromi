@@ -124,6 +124,13 @@
 - 프론트 영향: 기존 `progress`·`coverage` 필드를 그대로 사용하므로 UI 변경은 필요 없다.
 - 관련 커밋: `75de331`.
 
+### 만료된 Spring 보고서 즉시 비공개 처리
+
+- 변경: `GET /api/v1/scans/:scanId/report`가 `report_expires_at`을 지난 보고서를 정리 작업 전에도 `404`로 반환한다.
+- 영향: 보관 정책의 실제 삭제 작업이 지연되어도 만료된 보고서가 조회되지 않는다.
+- 프론트 영향: 기존 보고서 없음 응답을 사용하므로 UI 변경은 필요 없다.
+- 관련 테스트: `ScanControllerTest.expiredReportIsNotReturnedEvenBeforeCleanupJobRuns`.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.
