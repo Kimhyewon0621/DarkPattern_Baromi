@@ -93,6 +93,11 @@
 - 변경: 무료 1단계 배포를 Cloudflare Pages·Supabase Auth/PostgreSQL/Storage 중심으로 정하고, Spring API·브라우저 워커는 별도 실행 환경으로 분리했다.
 - 영향: 로그인 구현과 무료 배포를 먼저 검증하고, 사용량이 커질 때만 Render/Railway/AWS 컨테이너로 확장한다.
 
+### Supabase 무료 단계 설정 계약
+
+- 변경: Supabase Auth/PostgreSQL/Storage와 Cloudflare Pages의 환경변수·JWT 검증·조직 권한·Storage 경로 계약을 문서화했다.
+- 영향: 프론트와 백엔드가 비밀키를 노출하지 않고 동일한 사용자·조직 식별자를 사용해 로그인 기능을 구현할 수 있다.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.
