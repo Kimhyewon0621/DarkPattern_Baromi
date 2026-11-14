@@ -90,8 +90,8 @@
 
 ### 인증·배포 아키텍처 결정 기록
 
-- 변경: 임시 소유 세션과 상용 계정·조직 권한의 차이, Cloudflare Pages·컨테이너 API/워커·관리형 PostgreSQL·오브젝트 스토리지 배포 경계를 문서화했다.
-- 영향: 로그인 구현과 운영 배포를 임시 쿠키나 Pages 런타임에 억지로 결합하지 않고, Spring/PostgreSQL 전환 게이트를 기준으로 진행한다.
+- 변경: 무료 1단계 배포를 Cloudflare Pages·Supabase Auth/PostgreSQL/Storage 중심으로 정하고, Spring API·브라우저 워커는 별도 실행 환경으로 분리했다.
+- 영향: 로그인 구현과 무료 배포를 먼저 검증하고, 사용량이 커질 때만 Render/Railway/AWS 컨테이너로 확장한다.
 
 ## 변경 기록 규칙
 
