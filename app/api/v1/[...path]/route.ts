@@ -441,9 +441,14 @@ export async function GET(request: NextRequest, context: Context) {
 
 export async function DELETE(request: NextRequest, context: Context) {
   const session = request.cookies.get(cookie)?.value;
+  const route = await context.params;
+  if (route.path.length === 1 && route.path[0] === "session") {
+    const response = Response.json({ revoked: Boolean(session) });
+    response.headers.append("Set-Cookie", `${cookie}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict`);
+    return response;
+  }
   if (!session) return notFound();
   const ownerHash = hash(session);
-  const route = await context.params;
   const [resource, id] = route.path;
   if (!id || route.path.length !== 2) return notFound();
   if (resource === "scans") {

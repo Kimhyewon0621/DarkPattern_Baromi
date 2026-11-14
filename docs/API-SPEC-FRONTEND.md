@@ -7,6 +7,7 @@
 - Base URL: 현재 프론트와 같은 origin의 `/api/v1`
 - 요청 본문: `Content-Type: application/json`
 - 세션: 서버가 `darkpattern-session` HttpOnly 쿠키를 발급한다. 프론트는 쿠키 값을 읽거나 직접 저장하지 않는다.
+- 세션 폐기: `DELETE /api/v1/session`이 HttpOnly 세션 쿠키를 즉시 만료시킨다.
 - 오류 형식: `{ "error": "사용자에게 표시할 메시지" }`
 - 주요 상태: `QUEUED`, `RUNNING`, `COMPLETED`, `PARTIAL`, `CANCELLED`, `FAILED`
 - 화면 단계: `product`, `cart`, `checkout`
