@@ -15,14 +15,14 @@
 
 ## 무료 1단계 배포 결정
 
-- 프론트: Cloudflare Pages
+- 프론트: Vercel(현재 Next.js와 미리보기 배포에 최적화)
 - 인증: Supabase Auth
 - 상태 저장소: Supabase PostgreSQL
 - 증거·보고서: Supabase Storage
 - Spring API: 무료 컨테이너 호스팅 또는 개발 단계 실행 환경
 - 탐색/AI 워커: 별도 실행 환경(브라우저 런타임을 지원하는 무료 VM/컨테이너 우선)
 
-Cloudflare Pages에는 장시간 브라우저 탐색 워커나 PostgreSQL을 배치하지 않는다. API, 워커, 데이터베이스, 오브젝트 스토리지는 각각 독립적으로 백업·스케일·장애 복구해야 한다.
+Vercel 또는 Cloudflare Pages에는 장시간 브라우저 탐색 워커나 PostgreSQL을 배치하지 않는다. API, 워커, 데이터베이스, 오브젝트 스토리지는 각각 독립적으로 백업·스케일·장애 복구해야 한다. Cloudflare Pages는 정적 프론트와 도메인 프록시가 필요한 경우 대안으로 사용할 수 있다.
 
 ## 유료 운영 전환
 

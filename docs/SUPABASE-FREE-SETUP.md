@@ -5,7 +5,7 @@
 - Supabase Auth: 이메일 인증·OAuth와 사용자 세션
 - Supabase PostgreSQL: 조직, 멤버십, 상점, 진단 메타데이터
 - Supabase Storage: 보고서와 증거 파일
-- Cloudflare Pages: 공개 프론트
+- Vercel: 공개 Next.js 프론트(Cloudflare Pages로 대체 가능)
 
 Spring API에는 Supabase의 `service_role` 키를 노출하지 않는다. 브라우저는 publishable/anon 키만 사용하고, 서버는 비밀 환경변수로 보관한다.
 
