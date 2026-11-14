@@ -86,6 +86,7 @@
 
 - 변경: `DELETE /api/v1/session`이 현재 HttpOnly 소유 세션 쿠키를 즉시 만료시킨다.
 - 영향: 브라우저에서 진단 소유 세션을 명시적으로 폐기할 수 있다.
+- 보안: 폐기 쿠키도 발급 쿠키와 동일한 `HttpOnly`, `SameSite=Strict`, HTTPS 환경의 `Secure` 속성을 사용한다.
 
 ## 변경 기록 규칙
 

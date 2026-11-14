@@ -443,8 +443,11 @@ export async function DELETE(request: NextRequest, context: Context) {
   const session = request.cookies.get(cookie)?.value;
   const route = await context.params;
   if (route.path.length === 1 && route.path[0] === "session") {
-    const response = Response.json({ revoked: Boolean(session) });
-    response.headers.append("Set-Cookie", `${cookie}=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict`);
+    const response = NextResponse.json({ revoked: Boolean(session) });
+    response.cookies.set(cookie, "", {
+      httpOnly: true, sameSite: "strict", path: "/", maxAge: 0,
+      secure: request.nextUrl.protocol === "https:",
+    });
     return response;
   }
   if (!session) return notFound();
