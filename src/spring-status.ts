@@ -119,5 +119,6 @@ export async function listSpringShopScans(shopId: string, owner: string, limit =
   const response = await fetch(`${base}/api/v1/scans/shop/${encodeURIComponent(shopId)}?limit=${limit}`, { headers: { "x-baromi-owner": owner }, signal: AbortSignal.timeout(springTimeoutMs()) });
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`Spring scan history failed: ${response.status}`);
-  return await response.json() as unknown[];
+  const body = await response.json() as { scans?: unknown[] };
+  return body.scans ?? [];
 }
