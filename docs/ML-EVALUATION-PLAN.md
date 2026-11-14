@@ -40,3 +40,5 @@
 - LLM/DL 호출률과 비용이 예산 안에 있는가
 
 평가 명령은 `npm run evaluate`로 실행한다. `npm run evaluate -- --help`는 평가를 실행하지 않고 사용법만 출력하며, `--text-validation`을 붙이면 문구 변형 검증 세트를 선택한다.
+
+상점 그룹별 데이터 품질과 미검사 범위는 `npm run dataset:groups`로 확인한다. `BAROMI_DATASET_PATH`로 평가 파일을 바꿀 수 있으며, `PENDING` 라벨은 합의 지표에서 제외된다. 릴리스 게이트는 그룹이 split을 넘나들지 않고, 합의 라벨이 하나 이상이며, 그룹별 분포를 확인한 뒤 통과시킨다.
