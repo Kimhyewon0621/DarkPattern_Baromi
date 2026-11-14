@@ -67,6 +67,11 @@
 - 변경: `ai:evaluate`가 `operatorAdjudication=PENDING` 라벨을 정확도·정밀도·재현율에서 제외하고 `pendingLabels`로 별도 출력한다.
 - 영향: 합의되지 않은 운영자 판단이 모델 선택 지표를 왜곡하지 않는다.
 
+### AI 데이터셋 내보내기 합의 상태 보존
+
+- 변경: `ai:dataset`이 운영자 라벨의 `operatorAdjudication`을 `PENDING/AGREED` 그대로 내보낸다.
+- 영향: 라벨 저장부터 평가까지 합의 상태가 유지되어 보류 라벨을 자동으로 지표에서 제외할 수 있다.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.
