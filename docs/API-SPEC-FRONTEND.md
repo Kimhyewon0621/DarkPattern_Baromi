@@ -30,6 +30,14 @@
 
 ## 2. 쇼핑몰 등록·확인
 
+### `GET /api/v1/shops?limit=50`
+
+현재 세션에 속한 쇼핑몰 목록을 반환한다. `limit`은 1~100으로 제한된다.
+
+```json
+{ "limit": 50, "shops": [{ "shopId": "uuid", "url": "https://shop.example.com" }] }
+```
+
 ### `POST /api/v1/shops`
 
 ```json
@@ -187,6 +195,81 @@
 ```json
 { "labels": [{ "candidateId": "...", "label": "LIKELY_RISK|NEEDS_REVIEW|LIKELY_BENIGN|INSUFFICIENT_EVIDENCE" }] }
 ```
+
+## 8. Spring/PostgreSQL 내부 API
+
+아래 API는 브라우저가 직접 호출하지 않는다. Node API와 worker가 `X-Baromi-Owner` 또는 `X-Baromi-Worker` 헤더를 사용해 호출한다.
+
+### `GET /api/v1/health/readiness`
+
+PostgreSQL 연결 확인. 정상 응답:
+
+```json
+{ "status": "ready", "database": "ok" }
+```
+
+### `POST /api/v1/shops` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 본문은 `{ "id": "uuid|null", "url": "https://...", "consent": true }`이며, Node에서 미러링할 때 사용한다.
+
+### `GET /api/v1/shops/:shopId` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 응답은 `{ "shopId": "uuid", "url": "https://..." }`.
+
+### `GET /api/v1/shops` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 응답은 Node 목록 API와 같은 `{ "limit": 50, "shops": [] }` 형식이다.
+
+### `POST /api/v1/scans` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 본문:
+
+```json
+{
+  "id": "uuid|null",
+  "shopId": "uuid",
+  "targetUrl": "https://shop.example.com",
+  "executionMode": "STATIC|DYNAMIC",
+  "viewport": "DESKTOP|MOBILE",
+  "purchasePath": "CART|DIRECT"
+}
+```
+
+응답 `202`: `{ "scanId": "uuid", "status": "queued" }`.
+
+### `GET /api/v1/scans/:scanId` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 상태는 소문자 `queued|running|partial|succeeded|failed|cancelled`로 반환될 수 있다. 프론트 공개 API는 이를 대문자 상태로 정규화한다.
+
+### `GET /api/v1/scans/:scanId/report` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. PostgreSQL에 저장된 원본 보고서 JSON을 반환한다.
+
+### `GET /api/v1/scans/shop/:shopId` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. `limit`은 1~100이다.
+
+### `POST /api/v1/scans/claim` (worker 전용)
+
+헤더 `X-Baromi-Worker` 필수. 큐에서 가장 오래된 `queued` 작업을 원자적으로 가져와 `running`으로 바꾼다. 작업이 없으면 `204`.
+
+### `PATCH /api/v1/scans/:scanId/status` (worker 전용)
+
+헤더 `X-Baromi-Worker` 필수. 본문:
+
+```json
+{ "status": "queued|running|partial|succeeded|failed|cancelled", "stage": "product|cart|checkout|null", "reportJson": "..." }
+```
+
+허용되지 않는 상태 전이는 `409`다. 보고서 JSON은 최대 4MB이며 보관 기간은 서버 정책을 따른다.
+
+### `POST /api/v1/scans/recover` (worker/운영 전용)
+
+헤더 `X-Baromi-Worker` 필수. 본문 `{ "staleBefore": "ISO-8601" }`. 오래 멈춘 `running` 작업을 `failed`로 전환하고 `{ "recovered": 0, "staleBefore": "..." }`를 반환한다.
+
+## 9. 프론트가 사용할 공개 API와 내부 API 구분
+
+프론트 팀은 `POST /shops`, `GET /shops`, `GET /shops/:id`, `POST /shops/:id/verify`, `POST /scans`, `GET /scans/:id`, `GET /scans/:id/findings`, `GET /scans/:id/report`, `GET /shops/:id/scans`, `POST /scans/:id/cancel`, AI 검토 API만 사용한다. `X-Baromi-Owner`, `X-Baromi-Worker`, Spring 직접 호출은 프론트 코드에 넣지 않는다.
 
 ## 프론트 구현 주의
 
