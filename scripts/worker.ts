@@ -4,6 +4,7 @@ import { runScanJob } from "../src/scan-job";
 import { notifySpringScanStatus } from "../src/spring-status";
 import { claimSpringScan, isClaimCompatible, recoverSpringScans } from "../src/spring-queue";
 import { runAiReviewJob } from "../src/ai-review-job";
+import { scanStaleBefore } from "../src/scan-timeout";
 
 async function main() {
   const store = db();
@@ -16,11 +17,11 @@ async function main() {
     while (!stopping) {
       if (Date.now() - lastSpringRecovery >= 30_000) {
         lastSpringRecovery = Date.now();
-        await recoverSpringScans(new Date(Date.now() - 6 * 60_000)).catch((error) => console.warn(error instanceof Error ? error.message : error));
+        await recoverSpringScans(scanStaleBefore()).catch((error) => console.warn(error instanceof Error ? error.message : error));
         await store.$executeRaw`
           UPDATE "AiReview" SET status = 'FAILED', completedAt = CURRENT_TIMESTAMP, error = '워커 재시작으로 작업이 만료되었습니다.'
           WHERE status = 'RUNNING' AND startedAt IS NOT NULL
-            AND julianday("startedAt") < julianday('now', '-6 minutes')
+          AND "startedAt" < ${scanStaleBefore()}
         `.catch((error) => console.warn(error instanceof Error ? error.message : error));
       }
       const springJob = await claimSpringScan().catch((error) => { console.warn(error instanceof Error ? error.message : error); return null; });
@@ -41,8 +42,8 @@ async function main() {
       // Reconcile jobs from an interrupted worker once their execution limit has passed.
       await store.$executeRaw`
         UPDATE "Scan" SET status = CASE WHEN "cancelRequested" THEN 'CANCELLED' ELSE 'FAILED' END
-        WHERE status = 'RUNNING' AND "startedAt" IS NOT NULL
-          AND ("cancelRequested" OR julianday("startedAt") < julianday('now', '-6 minutes'))
+      WHERE status = 'RUNNING' AND "startedAt" IS NOT NULL
+          AND ("cancelRequested" OR "startedAt" < ${scanStaleBefore()})
       `;
       const [job] = await store.$queryRaw<{ id: string; targetUrl: string }[]>`
         UPDATE "Scan" SET status = 'RUNNING', "startedAt" = CURRENT_TIMESTAMP, "durationMs" = NULL

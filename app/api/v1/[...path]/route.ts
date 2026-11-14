@@ -16,6 +16,7 @@ import { createSiteVerification, hashToken, matchesVerification, verificationDns
 import { encryptCredentials } from "../../../../src/credential-vault";
 import { mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, springAuthoritative, springReadiness } from "../../../../src/spring-status";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
+import { scanStaleBefore } from "../../../../src/scan-timeout";
 
 type Context = { params: Promise<{ path: string[] }> };
 type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string };
@@ -263,7 +264,7 @@ export async function GET(request: NextRequest, context: Context) {
       const [queued, running, stale] = await Promise.all([
         db().scan.count({ where: { status: "QUEUED" } }),
         db().scan.count({ where: { status: "RUNNING" } }),
-        db().scan.count({ where: { status: "RUNNING", startedAt: { lt: new Date(Date.now() - 6 * 60 * 1000) } } }),
+        db().scan.count({ where: { status: "RUNNING", startedAt: { lt: scanStaleBefore() } } }),
       ]);
       const healthy = stale === 0 && spring.ready;
       return Response.json({
