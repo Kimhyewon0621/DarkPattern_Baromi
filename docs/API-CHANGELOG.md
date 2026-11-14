@@ -109,6 +109,14 @@
 - 응답: 상점별 진단 이력은 기존 공개 API 계약에 맞춰 `scan[]` 배열로 반환한다. Spring 장애 시 `503`으로 명시한다.
 - 프론트 영향: UI 변경은 필요 없으며, 기존 응답 형식을 그대로 사용한다.
 
+### Spring 보고서·발견 목록 조회 경계 명시
+
+- 변경: `BAROMI_SPRING_AUTHORITATIVE=true`일 때 `GET /api/v1/scans/:scanId/report`와 `GET /api/v1/scans/:scanId/findings`는 Spring/PostgreSQL에 저장된 `reportJson`을 기준으로 반환한다.
+- 응답: 발견 목록은 보고서의 `findings` 배열을 그대로 반환하며, 보고서가 만료되었거나 Spring이 응답하지 않으면 SQLite로 조용히 되돌아가지 않고 `503`으로 알린다.
+- 프론트 영향: 기존 발견 목록·보고서 응답 형식은 유지된다. UI 변경은 필요 없다.
+- 환경변수: `BAROMI_SPRING_API_URL`과 `BAROMI_SPRING_AUTHORITATIVE=true`가 필요하다. 기본값은 기존 SQLite 경로다.
+- 관련 구현: `src/spring-status.ts`, `app/api/v1/[...path]/route.ts`.
+
 ## 변경 기록 규칙
 
 각 항목에 다음 정보를 포함한다.

@@ -11,6 +11,9 @@
 - [x] 프론트 origin을 환경변수로 제한하는 CORS
 - [ ] 최종 인증 계층과 owner 헤더 교체
 - [ ] Spring을 진단 상태의 단일 권위 저장소로 전환
+  - [x] 상점 목록·상점 상세·상점별 이력 read-through
+  - [x] 진단 상태·보고서·발견 목록 read-through
+  - [ ] 운영 PostgreSQL에서 owner/auth 경계와 보관 만료를 함께 검증
 
 ## 사용자 흐름
 
