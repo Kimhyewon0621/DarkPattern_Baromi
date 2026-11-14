@@ -42,3 +42,5 @@
 평가 명령은 `npm run evaluate`로 실행한다. `npm run evaluate -- --help`는 평가를 실행하지 않고 사용법만 출력하며, `--text-validation`을 붙이면 문구 변형 검증 세트를 선택한다.
 
 상점 그룹별 데이터 품질과 미검사 범위는 `npm run dataset:groups`로 확인한다. `BAROMI_DATASET_PATH`로 평가 파일을 바꿀 수 있으며, `PENDING` 라벨은 합의 지표에서 제외된다. 릴리스 게이트는 그룹이 split을 넘나들지 않고, 합의 라벨이 하나 이상이며, 그룹별 분포를 확인한 뒤 통과시킨다.
+
+문맥이 제한된 후보를 AI에 보내기 전의 결정적 1차 분류기는 `npm run classifier:evaluate`로 회귀 평가한다. 현재 기준선은 비용·옵션·표면 흐름·미검증 흐름을 분리하고, `UNRESOLVED`만 다음 단계로 넘긴다. 이 평가는 합성 회귀 게이트이며, 운영 라벨 데이터의 모델 선택 지표를 대체하지 않는다.

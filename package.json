@@ -25,6 +25,7 @@
     ,"ai:dataset": "tsx scripts/export-ai-dataset.ts"
     ,"ai:evaluate": "tsx scripts/evaluate-ai-review.ts"
     ,"dataset:groups": "tsx scripts/evaluate-dataset-groups.ts"
+    ,"classifier:evaluate": "tsx scripts/evaluate-review-classifier.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "7.10.1",
