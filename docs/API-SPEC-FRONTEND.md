@@ -190,6 +190,8 @@
 
 ### `POST /api/v1/scans/:scanId/ai-review-labels`
 
+각 라벨은 `candidateId`, `label`과 선택적 `adjudication`(`PENDING|AGREED`)을 받는다. 생략하면 서버가 `PENDING`으로 저장한다. 합의되지 않은 라벨은 오프라인 모델 평가 지표에 포함되지 않는다.
+
 운영자 라벨 저장:
 
 ```json

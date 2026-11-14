@@ -227,10 +227,11 @@ export async function POST(request: NextRequest, context: Context) {
     const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true } });
     if (!scan?.aiReview) return notFound();
     const labels = body?.labels;
-    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => !item || typeof item !== "object" || typeof (item as { candidateId?: unknown }).candidateId !== "string" || !["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? ""))) {
+    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => !item || typeof item !== "object" || typeof (item as { candidateId?: unknown }).candidateId !== "string" || !["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? "") || ((item as { adjudication?: unknown }).adjudication !== undefined && !["PENDING", "AGREED"].includes((item as { adjudication?: string }).adjudication ?? "")))) {
       return error("후보 ID와 허용된 라벨이 필요합니다.", 400);
     }
-    const saved = await db().aiReview.update({ where: { id: scan.aiReview.id }, data: { operatorLabelsJson: JSON.stringify(labels), labeledAt: new Date(), labelSource: "OPERATOR" } });
+    const normalizedLabels = labels.map((item: { candidateId: string; label: string; adjudication?: "PENDING" | "AGREED" }) => ({ ...item, adjudication: item.adjudication ?? "PENDING" }));
+    const saved = await db().aiReview.update({ where: { id: scan.aiReview.id }, data: { operatorLabelsJson: JSON.stringify(normalizedLabels), labeledAt: new Date(), labelSource: "OPERATOR" } });
     return Response.json({ id: saved.id, status: saved.status, labeledAt: saved.labeledAt });
   }
   if (resource === "scans" && id && action === "cancel" && route.length === 3) {
