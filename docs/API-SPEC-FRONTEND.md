@@ -190,7 +190,7 @@
 
 ### `POST /api/v1/scans/:scanId/ai-review-labels`
 
-각 라벨은 `candidateId`, `label`과 선택적 `adjudication`(`PENDING|AGREED`)을 받는다. 생략하면 서버가 `PENDING`으로 저장한다. 합의되지 않은 라벨은 오프라인 모델 평가 지표에 포함되지 않는다.
+각 라벨은 해당 진단 보고서의 `reviewCandidates[].id`에 존재하는 `candidateId`, `label`과 선택적 `adjudication`(`PENDING|AGREED`)을 받는다. 같은 후보를 중복 제출할 수 없으며, 생략하면 서버가 `PENDING`으로 저장한다. 합의되지 않은 라벨은 오프라인 모델 평가 지표에 포함되지 않는다.
 
 운영자 라벨 저장:
 

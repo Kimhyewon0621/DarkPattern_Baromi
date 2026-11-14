@@ -224,10 +224,17 @@ export async function POST(request: NextRequest, context: Context) {
     return Response.json({ id: job.id, status: job.status }, { status: 202 });
   }
   if (resource === "scans" && id && action === "ai-review-labels" && route.length === 3) {
-    const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true } });
+    const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true, reportPath: true } });
     if (!scan?.aiReview) return notFound();
     const labels = body?.labels;
-    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => !item || typeof item !== "object" || typeof (item as { candidateId?: unknown }).candidateId !== "string" || !["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? "") || ((item as { adjudication?: unknown }).adjudication !== undefined && !["PENDING", "AGREED"].includes((item as { adjudication?: string }).adjudication ?? "")))) {
+    const candidateIds = new Set((((await getReport(scan.reportPath)) as unknown as { reviewCandidates?: { id?: string }[] } | null)?.reviewCandidates ?? []).map((candidate) => candidate.id).filter((value): value is string => Boolean(value)));
+    const seenCandidateIds = new Set<string>();
+    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => {
+      const candidateId = item && typeof item === "object" ? (item as { candidateId?: unknown }).candidateId : undefined;
+      const valid = Boolean(item && typeof item === "object" && typeof candidateId === "string" && candidateIds.has(candidateId) && !seenCandidateIds.has(candidateId) && ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? "") && ((item as { adjudication?: unknown }).adjudication === undefined || ["PENDING", "AGREED"].includes((item as { adjudication?: string }).adjudication ?? "")));
+      if (typeof candidateId === "string") seenCandidateIds.add(candidateId);
+      return !valid;
+    })) {
       return error("후보 ID와 허용된 라벨이 필요합니다.", 400);
     }
     const normalizedLabels = labels.map((item: { candidateId: string; label: string; adjudication?: "PENDING" | "AGREED" }) => ({ ...item, adjudication: item.adjudication ?? "PENDING" }));
