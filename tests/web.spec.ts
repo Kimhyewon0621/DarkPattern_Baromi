@@ -77,6 +77,18 @@ test("URL과 동의를 검증하고 대기 중인 진단을 중단한다", async
   expect((await request.get(api + "shops/" + shop.shopId)).status()).toBe(404);
 });
 
+test("소유 세션을 폐기하면 기존 상점에 접근할 수 없다", async ({ request }) => {
+  const api = origin + "/api/v1/";
+  const created = await request.post(api + "shops", { data: { url: riskyUrl, consent: true } });
+  expect(created.status()).toBe(201);
+  const { shopId } = await created.json();
+  expect((await request.get(api + "shops/" + shopId)).status()).toBe(200);
+  const revoked = await request.delete(api + "session");
+  expect(revoked.status()).toBe(200);
+  expect(await revoked.json()).toEqual({ revoked: true });
+  expect((await request.get(api + "shops/" + shopId)).status()).toBe(404);
+});
+
 test("웹에서 진단하고 증거를 확인한 후 같은 조건으로 재진단한다", async ({ page, playwright }) => {
   test.setTimeout(120_000);
   worker = spawn(process.execPath, ["--import", "tsx", "scripts/worker.ts"], {
