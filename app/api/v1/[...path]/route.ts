@@ -14,7 +14,7 @@ import type { scanDemo } from "../../../../src/scan";
 import { fetchPublicHtml } from "../../../../src/public-html";
 import { createSiteVerification, hashToken, matchesVerification, verificationDnsPrefix, verificationFile, verificationName } from "../../../../src/site-verification";
 import { encryptCredentials } from "../../../../src/credential-vault";
-import { listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
+import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
 
@@ -310,6 +310,12 @@ export async function GET(request: NextRequest, context: Context) {
   if (!id || extra.length) return notFound();
 
   if (resource === "shops" && action === "scans" && route.length === 3) {
+    if (springAuthoritative()) {
+      try {
+        const spring = await listSpringShopScans(id, session);
+        if (spring) return Response.json(spring, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
     const shop = await db().shop.findFirst({ where: { id, ownerHash }, select: { id: true } });
     if (!shop) return notFound();
     const scans = await db().scan.findMany({

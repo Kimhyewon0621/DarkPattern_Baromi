@@ -112,3 +112,12 @@ export async function listSpringShops(owner: string, limit: number) {
   if (!response.ok) throw new Error(`Spring shop list failed: ${response.status}`);
   return await response.json() as Record<string, unknown>;
 }
+
+export async function listSpringShopScans(shopId: string, owner: string, limit = 50) {
+  const base = endpoint();
+  if (!base || !owner || !springAuthoritative()) return null;
+  const response = await fetch(`${base}/api/v1/scans/shop/${encodeURIComponent(shopId)}?limit=${limit}`, { headers: { "x-baromi-owner": owner }, signal: AbortSignal.timeout(springTimeoutMs()) });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Spring scan history failed: ${response.status}`);
+  return await response.json() as unknown[];
+}
