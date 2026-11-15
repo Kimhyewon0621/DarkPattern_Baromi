@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
 import { ButtonLink } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
+import { Logo } from "@/components/ui/Logo";
 
 /** Information architecture taken from feature/redesign; visuals follow the "Ledger" system. */
 export const siteNav = [
@@ -21,7 +22,7 @@ export function SiteHeader() {
     <header className="lp-header">
       <div className="lp-wrap lp-header__inner">
         <Link href="/" aria-label="바로미 홈">
-          <img src="/brand/baromi-logo.png" alt="바로미" width={77} height={28} style={{ height: 28, width: "auto" }} />
+          <Logo height={30} />
         </Link>
         <nav aria-label="주요 메뉴">
           {siteNav.map((item) => (
@@ -66,7 +67,7 @@ export function SiteFooter() {
   return (
     <footer className="lp-wrap lp-footer">
       <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 520 }}>
-        <img src="/brand/baromi-logo.png" alt="바로미" width={110} height={40} style={{ height: 40, width: "auto" }} />
+        <Logo height={34} />
         <p className="faint" style={{ fontSize: 13 }}>
           결과는 공정위 가이드라인 기준의 위험 신호예요. 법률 위반을 판단하거나 적법함을 보증하지 않아요.
           결제와 주문 확정은 실행하지 않아요. © 2026 바로미

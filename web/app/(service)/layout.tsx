@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { SideNav } from "@/components/shell/SideNav";
+import { Logo } from "@/components/ui/Logo";
 import { isDemo } from "@/lib/api";
 
 export default function ServiceLayout({ children }: { children: ReactNode }) {
@@ -10,7 +11,7 @@ export default function ServiceLayout({ children }: { children: ReactNode }) {
       <div className="app">
         <aside className="side">
           <Link href="/" className="side__brand" aria-label="바로미 홈">
-            <img src="/brand/baromi-logo.png" alt="바로미" width={77} height={28} style={{ height: 28, width: "auto" }} />
+            <Logo height={28} />
           </Link>
           <SideNav />
           <div className="side__foot">
