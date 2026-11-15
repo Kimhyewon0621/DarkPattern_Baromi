@@ -5,6 +5,17 @@
    ========================================================================== */
 
 :root {
+  /* approved brand tokens (brand board, baromi.css) */
+  --baromi-primary-start: #4f6bff;
+  --baromi-primary-end: #8a5cff;
+  --baromi-primary-gradient: linear-gradient(115deg, #4f6bff 0%, #8a5cff 100%);
+  --baromi-navy: #0f172a;
+  --baromi-lavender: #e8edff;
+  --baromi-surface: #f6f8ff;
+  --baromi-success: #10b981;
+  --baromi-warning: #ffb86b;
+  --baromi-danger: #ff6b6b;
+
   /* neutrals */
   --canvas: #f7f7f8;
   --surface: #ffffff;
@@ -1260,7 +1271,9 @@ code,
   position: sticky;
   top: 0;
   z-index: 20;
-  background: rgba(255, 255, 255, 0.94);
+  background: rgba(255, 255, 255, 0.86);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--line);
 }
 .lp-header__inner {
