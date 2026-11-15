@@ -1,13 +1,16 @@
 import type { Locator, Page, Response } from "playwright";
 import type { Stage } from "./demo";
 import type { InteractionEvidence, NetworkPriceEvidence } from "./rules";
+import type { ScanPhaseStatus } from "./scan-phases";
 
-const addCart = /(?:장바구니|카트|담기|add\s+to\s+(?:cart|bag|basket))/i;
-const openCart = /(?:장바구니|카트|cart|bag|basket)(?:\s*(?:보기|열기|가기))?$/i;
+// Do not treat the header's plain "장바구니" navigation as an add action.
+// An add candidate must express adding/putting an item into the cart.
+const addCart = /(?:(?:장바구니|카트)\s*(?:담기|추가)|(?:상품을?\s*)?담기|add\s+to\s+(?:cart|bag|basket))/i;
+const openCart = /^(?:(?:내|쇼핑|my|shopping)\s*)?(?:장바구니|카트|cart|bag|basket)(?:\s*(?:보기|열기|가기))?(?:\s*(?:\(\s*\d+\s*\)|\d+\s*(?:개|items?)?))?\s*$/i;
 const checkout = /(?:주문서|주문|구매|결제|checkout|proceed\s+to\s+checkout)/i;
 // Keep the candidate count visible to the blocker logic: a storefront may have
 // several product-card purchase buttons, so we must not guess which item to buy.
-const directBuy = /(?:바로\s*구매|즉시\s*구매|특가\s*구매|구매하기|buy\s+now|order\s+now)/i;
+const directBuy = /(?:바로\s*구매|즉시\s*구매|특가\s*구매|구매하기|주문하기|buy\s+now|order\s+now)/i;
 const priceKey = /(?:^|_)(?:total|subtotal|price|amount|shipping|delivery|fee|discount)(?:_|$)/i;
 
 function extractPrices(value: unknown, path = "$", depth = 0): { path: string; won: number }[] {
@@ -36,6 +39,15 @@ export async function priceEvidence(response: Response, stage: Stage): Promise<N
 }
 
 async function actionCandidate(page: Page, pattern: RegExp) {
+  if (pattern === directBuy) {
+    const activeSurface = page.locator('[role="dialog"]:visible, [aria-modal="true"]:visible, div.fixed.inset-0:visible').last();
+    if (await activeSurface.count()) {
+      const detailCta = activeSurface.getByRole("button", { name: directBuy })
+        .or(activeSurface.getByRole("link", { name: directBuy }))
+        .filter({ visible: true });
+      if (await detailCta.count() === 1) return { action: detailCta.first(), count: 1 };
+    }
+  }
   // Prefer the explicit product-detail CTA when card-level "담기" buttons
   // remain mounted behind an in-place detail view.
   if (pattern === addCart) {
@@ -128,17 +140,13 @@ async function prepareRequiredOptions(page: Page, stage: Stage): Promise<Interac
 
 async function clickAndSettle(page: Page, action: Locator) {
   const before = page.url();
-  const urlChanged = page.waitForURL((url) => url.href !== before, { timeout: 2_000 })
-    .then(() => true).catch(() => false);
+  const beforeText = await page.locator("body").innerText().catch(() => "");
   await action.click();
-  // React storefronts commonly update drawers/modals without navigation. Do
-  // not pay the full navigation timeout when the DOM settles in place.
-  const navigated = await Promise.race([
-    urlChanged,
-    page.waitForTimeout(600).then(() => false),
-  ]);
-  if (navigated) await page.waitForLoadState("domcontentloaded", { timeout: 2_000 }).catch(() => {});
-  await page.waitForTimeout(150);
+  // React storefronts commonly update drawers/modals without navigation.
+  // Wait for an actual URL/text change instead of sleeping after every click.
+  const changed = await page.waitForFunction(({ url, text }) => location.href !== url || (document.body?.innerText ?? "") !== text,
+    { url: before, text: beforeText }, { timeout: 1_200 }).then(() => true).catch(() => false);
+  if (changed && page.url() !== before) await page.waitForLoadState("domcontentloaded", { timeout: 1_500 }).catch(() => {});
 }
 
 /** Close a blocking modal only when its visible dialog exposes one unambiguous
@@ -160,7 +168,7 @@ async function isCheckoutLike(page: Page) {
   const url = page.url();
   if (/(?:checkout|order|payment|buy)/i.test(new URL(url).pathname)) return true;
   const text = await page.locator("body").innerText().catch(() => "");
-  const hasCheckoutCopy = /(?:주문서|주문\s*정보|결제\s*정보|배송\s*정보|checkout|payment|place\s+order)/i.test(text);
+  const hasCheckoutCopy = /(?:주문\s*(?:서|결제서|정보)|결제\s*(?:정보|승인)|최종\s*결제\s*금액|배송\s*정보|checkout|payment|place\s+order)/i.test(text);
   const hasCustomerForm = await page.locator('input:not([type="hidden"]), select, textarea').count() > 0;
   return hasCheckoutCopy && hasCustomerForm;
 }
@@ -187,22 +195,23 @@ async function discoverSurfaceDestinations(page: Page) {
       const parsed = new URL(raw, window.location.href);
       if (parsed.origin !== expectedOrigin || !/^https?:$/.test(parsed.protocol)) return [];
       parsed.hash = "";
-    const kind = /로그인|회원가입|sign\s*in|log\s*in|account/i.test(text) ? "AUTH"
-        : /구독|멤버십|정기\s*결제|자동\s*(?:갱신|연장)|subscription|membership/i.test(text) ? "SUBSCRIPTION"
-        : /해지|탈퇴|환불|구독\s*취소|cancel|unsubscribe/i.test(text) ? "CANCELLATION"
-          : /쿠폰|할인코드|프로모션|coupon|promo/i.test(text) ? "COUPON"
-            : /추천|인기|베스트|recommend|popular|best/i.test(text) ? "RECOMMENDATION"
-              : /배송|교환|반품|환불|이용약관|개인정보|policy|shipping|return/i.test(text) ? "POLICY"
-                : /카테고리|상품목록|전체상품|category|catalog|shop\s*all/i.test(text) ? "CATALOG" : null;
+      const hints = `${text} ${parsed.pathname} ${parsed.search}`;
+      const kind = /로그인|회원가입|sign\s*in|log\s*in|account|sign-?up/i.test(text) || /(?:^|\/)(?:login|signin|signup|account|my-?page)(?:\/|$)/i.test(parsed.pathname) ? "AUTH"
+        : /구독\s*(?:해지|취소)|해지|탈퇴|환불|cancel|unsubscribe|withdrawal|account.?delet/i.test(hints) ? "CANCELLATION"
+          : /구독|멤버십|정기\s*결제|자동\s*(?:갱신|연장)|subscription|membership|recurring|auto-?renew/i.test(hints) ? "SUBSCRIPTION"
+            : /쿠폰|할인코드|프로모션|coupon|promo|discount|event/i.test(hints) ? "COUPON"
+              : /추천|인기|베스트|후기|리뷰|recommend|popular|best|review|rating/i.test(hints) ? "RECOMMENDATION"
+                : /배송|교환|반품|환불|이용약관|개인정보|policy|shipping|delivery|return|exchange|terms|privacy/i.test(hints) ? "POLICY"
+                  : /카테고리|상품목록|전체상품|category|catalog|shop\s*all|collection|search/i.test(hints) ? "CATALOG" : null;
       return kind ? [{ kind, text, href: parsed.href, source: "LINK" as const }] : [];
     } catch { return []; }
   }), origin);
   const buttons = await page.locator("button:visible, [role=button]:visible").evaluateAll((controls) => controls.flatMap((control) => {
     const text = (control.textContent ?? control.getAttribute("aria-label") ?? control.getAttribute("title") ?? "").replace(/\s+/g, " ").trim();
     if (!text) return [];
-    const kind = /로그인|회원가입|sign\s*in|log\s*in|account/i.test(text) ? "AUTH"
+    const kind = /로그인|회원가입|sign\s*in|log\s*in|account|sign-?up/i.test(text) ? "AUTH"
+      : /구독\s*(?:해지|취소)|해지|탈퇴|환불|cancel|unsubscribe/i.test(text) ? "CANCELLATION"
       : /구독|멤버십|정기\s*결제|자동\s*(?:갱신|연장)|subscription|membership/i.test(text) ? "SUBSCRIPTION"
-      : /해지|탈퇴|환불|구독\s*취소|cancel|unsubscribe/i.test(text) ? "CANCELLATION"
         : /쿠폰|할인코드|프로모션|coupon|promo/i.test(text) ? "COUPON"
           : /추천|인기|베스트|후기|리뷰|recommend|popular|best|review/i.test(text) ? "RECOMMENDATION"
             : /배송|교환|반품|환불|이용약관|개인정보|policy|shipping|return|exchange|terms|privacy/i.test(text) ? "POLICY"
@@ -225,15 +234,60 @@ export type SurfaceObservation = {
 
 async function inspectSurfaceDestinations(page: Page, destinations: { kind: SurfaceObservation["kind"]; href: string; text?: string; source?: SurfaceObservation["source"] }[]): Promise<SurfaceObservation[]> {
   const origin = new URL(page.url()).origin;
-  return Promise.all(destinations.slice(0, 8).map(async (destination, index): Promise<SurfaceObservation> => {
-    if (destination.source === "BUTTON") return { evidenceId: `surface:${destination.kind.toLowerCase()}:${index}`, kind: destination.kind, url: destination.href, status: null, title: destination.text ?? "", text: `버튼형 표면 후보: ${destination.text ?? "이름 없음"}`, source: "BUTTON", outcome: "DISCOVERED" };
+  const inspectOne = async (destination: typeof destinations[number], index: number): Promise<SurfaceObservation> => {
+    const token = encodeURIComponent(destination.text?.replace(/\s+/g, " ").trim() || new URL(destination.href).pathname).slice(0, 36);
+    const evidenceId = `surface:${destination.kind.toLowerCase()}:${index}:${token}`;
+    if (destination.source === "BUTTON") {
+      const safeReadOnlyControl = destination.kind === "CATALOG" || destination.kind === "RECOMMENDATION" || destination.kind === "POLICY";
+      if (!safeReadOnlyControl || !destination.text) return { evidenceId, kind: destination.kind, url: destination.href, status: null, title: destination.text ?? "", text: `버튼형 표면 후보: ${destination.text ?? "이름 없음"}`, source: "BUTTON", outcome: "DISCOVERED" };
+      const probe = await page.context().newPage();
+      try {
+        const response = await probe.goto(destination.href, { waitUntil: "domcontentloaded", timeout: 3_500 });
+        if (!response?.ok()) return { evidenceId, kind: destination.kind, url: destination.href, status: response?.status() ?? null, title: destination.text, text: "버튼이 있는 화면을 다시 불러오지 못했습니다.", source: "BUTTON", outcome: "FETCH_FAILED" };
+        await waitForDomQuiet(probe);
+        const exactText = destination.text.replace(/\s+/g, " ").trim();
+        const control = probe.getByRole("button", { name: exactText, exact: true }).or(probe.getByRole("link", { name: exactText, exact: true }));
+        if (await control.count() !== 1 || await control.locator("xpath=ancestor::form").count()) {
+          return { evidenceId, kind: destination.kind, url: destination.href, status: response.status(), title: exactText, text: `안전한 단일 읽기 동작으로 확정하지 못했습니다: ${exactText}`, source: "BUTTON", outcome: "DISCOVERED" };
+        }
+        const beforeUrl = probe.url();
+        const beforeText = await probe.locator("body").innerText().catch(() => "");
+        const beforeState = await control.evaluate((node) => `${node.className}|${node.getAttribute("aria-selected")}|${node.getAttribute("aria-pressed")}|${node.getAttribute("data-state")}`).catch(() => "");
+        await control.click({ timeout: 2_000 });
+        const changed = await probe.waitForFunction(({ url, text, label, state }) => {
+          const target = [...document.querySelectorAll("button,[role=button],a")].find((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim() === label);
+          const nextState = target ? `${(target as HTMLElement).className}|${target.getAttribute("aria-selected")}|${target.getAttribute("aria-pressed")}|${target.getAttribute("data-state")}` : "";
+          return location.href !== url || (document.body?.innerText ?? "") !== text || (state !== "" && nextState !== state);
+        }, { url: beforeUrl, text: beforeText, label: exactText, state: beforeState }, { timeout: 1_000 }).then(() => true).catch(() => false);
+        const url = probe.url();
+        const text = (await probe.locator("body").innerText().catch(() => "")).replace(/\s+/g, " ").trim().slice(0, 1_000);
+        return {
+          evidenceId, kind: destination.kind, url, status: response.status(), title: await probe.title().catch(() => exactText),
+          text: changed ? text : `안전하게 눌렀지만 화면 변화가 확인되지 않았습니다: ${exactText}`,
+          source: "BUTTON", outcome: changed ? "OBSERVED" : "DISCOVERED",
+        };
+      } catch {
+        return { evidenceId, kind: destination.kind, url: destination.href, status: null, title: destination.text, text: `읽기 전용 화면을 열지 못했습니다: ${destination.text}`, source: "BUTTON", outcome: "FETCH_FAILED" };
+      } finally {
+        await probe.close().catch(() => {});
+      }
+    }
     if (new URL(destination.href).origin !== origin) {
       return { evidenceId: `surface:${destination.kind.toLowerCase()}:${index}`, kind: destination.kind, url: destination.href, status: null, title: "", text: "", source: "LINK", outcome: "CROSS_ORIGIN" };
+    }
+    const route = new URL(destination.href);
+    if (/(?:^|\/)(?:logout|signout|unsubscribe|cancel|delete|withdraw)(?:\/|$)/i.test(route.pathname)) {
+      return {
+        evidenceId: `surface:${destination.kind.toLowerCase()}:${index}`, kind: destination.kind,
+        url: destination.href, status: null, title: destination.text ?? "",
+        text: "계정·구독 상태를 바꿀 수 있는 경로라 열지 않았습니다. 경로만 발견했습니다.",
+        source: "LINK", outcome: "DISCOVERED",
+      };
     }
     const probe = await page.context().newPage();
     try {
       const response = await probe.goto(destination.href, { waitUntil: "domcontentloaded", timeout: 3_500 });
-      await probe.waitForTimeout(150);
+      if (response?.ok()) await waitForDomQuiet(probe);
       return {
         evidenceId: `surface:${destination.kind.toLowerCase()}:${index}`, kind: destination.kind, url: destination.href, status: response?.status() ?? null, source: "LINK",
         title: await probe.title().catch(() => ""),
@@ -245,7 +299,26 @@ async function inspectSurfaceDestinations(page: Page, destinations: { kind: Surf
     } finally {
       await probe.close().catch(() => {});
     }
-  }));
+  };
+  const results: SurfaceObservation[] = [];
+  // Keep browser resource use bounded while checking more than one candidate
+  // when a surface exposes several distinct routes.
+  for (let offset = 0; offset < Math.min(destinations.length, 28); offset += 4) {
+    results.push(...await Promise.all(destinations.slice(offset, offset + 4).map((item, index) => inspectOne(item, offset + index))));
+  }
+  return results;
+}
+
+export async function waitForDomQuiet(page: Page, quietMs = 100, maxMs = 700) {
+  await page.evaluate(`new Promise(resolve => {
+    let quietTimer;
+    let maxTimer;
+    const observer = new MutationObserver(() => { clearTimeout(quietTimer); quietTimer = setTimeout(finish, ${quietMs}); });
+    const finish = () => { observer.disconnect(); clearTimeout(quietTimer); clearTimeout(maxTimer); resolve(); };
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+    quietTimer = setTimeout(finish, ${quietMs});
+    maxTimer = setTimeout(finish, ${maxMs});
+  })`);
 }
 
 export type JourneyObservation = {
@@ -262,15 +335,20 @@ export type JourneyBlocker = {
 };
 
 async function missingActionBlocker(page: Page, count: number, action: JourneyBlocker["action"]): Promise<JourneyBlocker> {
-  const text = await page.locator("body").innerText().catch(() => "");
-  const login = /(?:로그인|회원가입|sign\s*in|log\s*in|account\s+required|please\s+sign)/i.test(text) &&
-    !/(?:로그아웃|sign\s*out|log\s*out)/i.test(text);
+  const passwordVisible = await page.locator('input[type="password"]:visible').count() > 0;
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  const barrierText = await page.locator('[role="dialog"]:visible, [aria-modal="true"]:visible, div.fixed.inset-0:visible')
+    .allInnerTexts().then((items) => items.join(" ")).catch(() => "");
+  const loginCopy = /(?:로그인|회원가입|sign\s*in|log\s*in|account\s+required|please\s+sign)/i;
+  const login = passwordVisible || loginCopy.test(barrierText)
+    || (!count && loginCopy.test(bodyText) && /(?:구매|주문|계속|purchase|checkout|continue)/i.test(bodyText));
   return { stage: action === "OPEN_CHECKOUT" ? "cart" : "product", code: login ? "LOGIN_REQUIRED" : count ? "ACTION_AMBIGUOUS" : "ACTION_NOT_FOUND", action, candidateCount: count };
 }
 
 /** Explore only as far as the checkout form. It never clicks a final-order action. */
 export async function explorePurchaseJourney(
   page: Page, onStage?: (stage: Stage) => Promise<void>, purchasePath: "CART" | "DIRECT" = "CART",
+  onSurfacePhase?: (surface: SurfaceObservation["kind"], status: ScanPhaseStatus, details?: { reason?: string; evidenceIds?: string[] }) => Promise<void>,
 ) {
   let stage: Stage = "product";
   const observations: JourneyObservation[] = [];
@@ -281,9 +359,42 @@ export async function explorePurchaseJourney(
     const discovered = await discoverSurfaceDestinations(page);
     const known = new Set(surfaceDestinations.map(({ href, kind, text }) => `${kind}:${href}:${text}`));
     const fresh = discovered.filter(({ href, kind, text }) => !known.has(`${kind}:${href}:${text}`));
-    surfaceDestinations = [...surfaceDestinations, ...fresh].slice(0, 12);
+    surfaceDestinations = [...surfaceDestinations, ...fresh].slice(0, 64);
     if (fresh.length) {
-      surfaceObservations = [...surfaceObservations, ...await inspectSurfaceDestinations(page, fresh.map(({ kind, href, text, source }) => ({ kind: kind as SurfaceObservation["kind"], href, text, source })))].slice(0, 24);
+      // Inspect additional distinct routes when a first candidate has not
+      // produced readable evidence. Catalog, recommendation and policy areas
+      // get a larger sample because they can contain multiple independent pages.
+      const perKindBudget: Record<SurfaceObservation["kind"], number> = {
+        CATALOG: 8, RECOMMENDATION: 5, POLICY: 5, AUTH: 3, COUPON: 3, SUBSCRIPTION: 3, CANCELLATION: 3,
+      };
+      const existingCounts = new Map<SurfaceObservation["kind"], number>();
+      for (const item of surfaceObservations) existingCounts.set(item.kind, (existingCounts.get(item.kind) ?? 0) + 1);
+      const selectedCounts = new Map<SurfaceObservation["kind"], number>();
+      const toInspect = fresh.filter(({ kind }) => {
+        const typedKind = kind as SurfaceObservation["kind"];
+        const total = (existingCounts.get(typedKind) ?? 0) + (selectedCounts.get(typedKind) ?? 0);
+        if (total >= perKindBudget[typedKind]) return false;
+        selectedCounts.set(typedKind, (selectedCounts.get(typedKind) ?? 0) + 1);
+        return true;
+      });
+      const freshKinds = [...new Set(toInspect.map(({ kind }) => kind as SurfaceObservation["kind"]))];
+      for (const kind of freshKinds) {
+        if (!surfaceObservations.some((item) => item.kind === kind && item.outcome === "OBSERVED")) {
+          await onSurfacePhase?.(kind, "RUNNING");
+        }
+      }
+      const inspected = await inspectSurfaceDestinations(page, toInspect.map(({ kind, href, text, source }) => ({ kind: kind as SurfaceObservation["kind"], href, text, source })));
+      surfaceObservations = [...surfaceObservations, ...inspected].slice(0, 64);
+      for (const kind of freshKinds) {
+        const items = surfaceObservations.filter((item) => item.kind === kind);
+        const observed = items.some((item) => item.outcome === "OBSERVED");
+        const discovered = items.some((item) => item.outcome === "DISCOVERED");
+        const blocked = items.some((item) => item.outcome === "FETCH_FAILED" || item.outcome === "CROSS_ORIGIN");
+        await onSurfacePhase?.(kind, observed ? "COVERED" : discovered ? "DISCOVERED" : blocked ? "BLOCKED" : "NOT_FOUND", {
+          reason: observed ? undefined : discovered ? "버튼형 영역을 발견했지만 안전한 내부 화면 확인은 하지 않았습니다." : blocked ? "발견한 경로에 접근할 수 없어 내용을 확인하지 못했습니다." : "후보 화면을 확인하지 못했습니다.",
+          evidenceIds: items.map(({ evidenceId }) => evidenceId),
+        });
+      }
     }
   };
   await refreshSurface();
@@ -312,7 +423,7 @@ export async function explorePurchaseJourney(
       id: "product:direct-buy", stage, kind: "NAVIGATION", capturedAt: new Date().toISOString(), outcome: "OBSERVED",
     }});
     if (!await isCheckoutLike(page)) return { observations, network, surfaceDestinations, surfaceObservations, reached: "product" as Stage,
-      blocker: { stage: "product" as Stage, code: "ACTION_FAILED" as const, action: "DIRECT_BUY" as const, candidateCount: 1 } };
+      blocker: { stage: "product", code: "ACTION_FAILED", action: "DIRECT_BUY", candidateCount: 1 } satisfies JourneyBlocker };
     stage = "checkout";
     await refreshSurface();
     await onStage?.(stage);
@@ -321,10 +432,31 @@ export async function explorePurchaseJourney(
   }
 
   const add = await actionCandidate(page, addCart);
-  if (!add.action) return {
-    observations, network, surfaceDestinations, surfaceObservations, reached: stage,
-    blocker: await missingActionBlocker(page, add.count, "ADD_TO_CART"),
-  };
+  if (!add.action) {
+    const cartGap = await missingActionBlocker(page, add.count, "ADD_TO_CART");
+    // A shop may genuinely provide only direct purchase. Preserve the missing
+    // cart route as an explicit coverage gap, but continue through one
+    // unambiguous direct-buy action so checkout evidence is still collected.
+    const fallback = await actionCandidate(page, directBuy);
+    if (!fallback.action) return {
+      observations, network, surfaceDestinations, surfaceObservations, reached: stage, blocker: cartGap,
+    };
+    const directUrl = page.url();
+    try { await clickAndSettle(page, fallback.action); } catch {
+      return { observations, network, surfaceDestinations, surfaceObservations, reached: stage, blocker: cartGap };
+    }
+    observations.push({ stage, url: directUrl, action: {
+      id: "product:direct-buy-fallback", stage, kind: "NAVIGATION", capturedAt: new Date().toISOString(), outcome: "OBSERVED",
+    }});
+    if (!await isCheckoutLike(page)) return {
+      observations, network, surfaceDestinations, surfaceObservations, reached: stage, blocker: cartGap,
+    };
+    stage = "checkout";
+    await refreshSurface();
+    await onStage?.(stage);
+    await Promise.allSettled([...pending]);
+    return { observations, network, surfaceDestinations, surfaceObservations, reached: stage, blocker: cartGap };
+  }
   const before = page.url();
   try { await clickAndSettle(page, add.action); } catch {
     return { observations, network, surfaceDestinations, surfaceObservations, reached: stage,
@@ -334,10 +466,12 @@ export async function explorePurchaseJourney(
     id: "product:add-cart", stage, kind: "NAVIGATION", capturedAt: new Date().toISOString(), outcome: "OBSERVED",
   }});
 
-  const cartAction = await actionCandidate(page, openCart);
-  if (cartAction.action) {
-    await dismissBlockingDialog(page);
-    await clickAndSettle(page, cartAction.action);
+  if (!await isCartLike(page)) {
+    const cartAction = await actionCandidate(page, openCart);
+    if (cartAction.action) {
+      await dismissBlockingDialog(page);
+      await clickAndSettle(page, cartAction.action);
+    }
   }
   if (!await isCartLike(page)) return {
     observations, network, surfaceDestinations, surfaceObservations, reached: "product" as Stage,

@@ -13,25 +13,27 @@ function sameFee(prior: Fee, current: Fee) {
 }
 
 export function detectDripPricing(product: Snapshot, later: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = []): Finding[] {
-  const findings: Finding[] = [];
   const disclosed = product.fees.filter(paidRequired);
+  const newlyDisclosed: { fee: Fee; snapshot: Snapshot }[] = [];
   for (const snapshot of later) {
     for (const fee of snapshot.fees.filter(paidRequired)) {
       const currentKey = mandatoryFeeFromText(fee.label)?.key;
       if (currentKey && priorDisclosures.some((item) => item.key === currentKey && item.won === fee.won)) continue;
       if (disclosed.some((prior) => sameFee(prior, fee))) continue;
-      findings.push({
-        type: "DRIP_PRICING",
-        status: "SUSPECTED",
-        ruleVersion: "3",
-        stage: snapshot.stage,
-        reason: "상품 상세 이후에 필수 비용이 처음 표시됩니다. " + fee.label,
-        elementBounds: fee.bounds,
-        evidence: [product, snapshot],
-        evidenceIds: evidenceIds([product, snapshot]),
-      });
+      newlyDisclosed.push({ fee, snapshot });
       disclosed.push(fee);
     }
   }
-  return findings;
+  if (!newlyDisclosed.length) return [];
+  const evidence = [product, ...new Set(newlyDisclosed.map(({ snapshot }) => snapshot))];
+  return [{
+    type: "DRIP_PRICING",
+    status: "SUSPECTED",
+    ruleVersion: "3",
+    stage: newlyDisclosed[0].snapshot.stage,
+    reason: "상품 상세 이후에 필수 비용이 처음 표시됩니다. " + newlyDisclosed.map(({ fee }) => fee.label).join(" · "),
+    elementBounds: newlyDisclosed[0].fee.bounds,
+    evidence,
+    evidenceIds: evidenceIds(evidence),
+  }];
 }

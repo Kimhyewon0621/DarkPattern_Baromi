@@ -32,7 +32,7 @@ export async function isProductPage(page: Page, url: string) {
   // count only visible controls; hidden card controls must not make the page
   // look ambiguous.
   const detailActions = page.locator('button:visible, a:visible').filter({
-    hasText: /장바구니\s*담기|바로\s*구매|구매하기|add\s*to\s*(?:cart|bag)|buy\s*now/i,
+    hasText: /장바구니\s*담기|바로\s*구매|지금\s*즉시.*주문하기|add\s*to\s*(?:cart|bag)|buy\s*now/i,
   });
   if (await detailActions.count() > 0) return true;
   for (const name of [addToCart, buyNow]) {

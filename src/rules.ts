@@ -2,6 +2,8 @@ import { detectPreselection } from "./detectors/preselection";
 import { detectDripPricing } from "./detectors/drip-pricing";
 import { detectUrgencyScarcity } from "./detectors/urgency-scarcity";
 import { detectAdditionalPatterns } from "./detectors/additional-patterns";
+import { detectSneakyCartAdd } from "./detectors/sneaky-cart";
+import { detectInteractionPatterns } from "./detectors/interaction-patterns";
 import type { Stage } from "./demo";
 
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -13,6 +15,13 @@ export type SurfaceSignal = {
   kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "MARKETING_CONSENT" | "POPUP";
   label: string;
   source: "link" | "button" | "text";
+  href?: string;
+};
+export type DecisionControl = {
+  label: string;
+  kind: "BUTTON" | "LINK" | "CHECKBOX" | "RADIO";
+  bounds: Bounds;
+  selected?: boolean;
   href?: string;
 };
 export type Snapshot = {
@@ -30,6 +39,10 @@ export type Snapshot = {
   fees: Fee[];
   precheckedSignals?: { label: string; bounds: Bounds; location?: EvidenceLocation }[];
   surfaceSignals?: SurfaceSignal[];
+  /** Visible, labelled controls used to compare paired accept/decline choices. */
+  decisionControls?: DecisionControl[];
+  /** Item count shown after exactly one add action in the isolated scan cart. */
+  cartItemCount?: number;
 };
 export type InteractionEvidence = {
   id: string;
@@ -54,7 +67,7 @@ export type NetworkPriceEvidence = {
 export type PriorFeeDisclosure = { key: string; won: number };
 export type Finding = {
   type: "PRESELECTION" | "DRIP_PRICING" | "URGENCY_SCARCITY" | "HIDDEN_INFO" | "FALSE_DISCOUNT" | "DISGUISED_AD" | "CONFIRM_SHAMING" | "FORCED_ACTION" | "HIDDEN_SUBSCRIPTION" | "SNEAKY_CART_ADD" | "FALSE_RECOMMENDATION" | "BAIT_SELLING" | "TRICK_QUESTION" | "MISDIRECTED_HIERARCHY" | "CANCELLATION_OBSTRUCTION" | "PRICE_COMPARISON_OBSTRUCTION";
-  status: "SUSPECTED";
+  status: "SUSPECTED" | "REVIEW_NEEDED";
   ruleVersion: "1" | "2" | "3";
   stage: Stage;
   reason: string;
@@ -71,10 +84,12 @@ export function evidenceIds(snapshots: Snapshot[]) {
 export function detect([product, ...later]: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = []): Finding[] {
   if (!product) return [];
   const findings = [
-    ...detectPreselection(product),
+    ...[product, ...later].flatMap((snapshot) => detectPreselection(snapshot)),
     ...detectDripPricing(product, later, priorDisclosures),
     ...detectUrgencyScarcity(product),
+    ...later.flatMap((snapshot) => detectSneakyCartAdd(snapshot)),
     ...[product, ...later].flatMap((snapshot) => detectAdditionalPatterns(snapshot)),
+    ...[product, ...later].flatMap((snapshot) => detectInteractionPatterns(snapshot)),
   ];
   // A wording signal can persist across product/cart/checkout snapshots. Keep
   // the first occurrence as the canonical finding so reports do not show the

@@ -12,7 +12,7 @@ const rules: Rule[] = [
   { type: "SNEAKY_CART_ADD", version: "1", title: "몰래 장바구니 추가 검토", pattern: /함께\s*담|추천\s*상품.*장바구니|자동으로.*장바구니|장바구니에\s*담겼|같이\s*구매/i, reason: (line) => `사용자 요청 없이 다른 상품이 함께 담기는지 확인이 필요합니다: ${line}` },
   { type: "FALSE_RECOMMENDATION", version: "1", title: "거짓 추천 검토", pattern: /구매자?\s*추천|베스트\s*리뷰|인기\s*상품|최저가|실시간\s*인기|추천\s*순위/i, reason: (line) => `추천·인기·후기 근거의 실제 대상과 산정 기준을 확인해야 합니다: ${line}` },
   { type: "BAIT_SELLING", version: "1", title: "유인 판매 검토", pattern: /품절|재고\s*없음|현재\s*판매\s*불가|최저가\s*상품/i, reason: (line) => `광고·목록에 노출된 상품을 실제로 구매할 수 있는지 확인해야 합니다: ${line}` },
-  { type: "TRICK_QUESTION", version: "1", title: "속임수 질문 검토", pattern: /동의하지\s*않습니다|혜택을\s*받지\s*않|수신\s*거부|광고\s*받지|아니오|아니요/i, reason: (line) => `질문과 선택지의 방향이 소비자 의도와 일치하는지 확인해야 합니다: ${line}` },
+  { type: "TRICK_QUESTION", version: "1", title: "속임수 질문 검토", pattern: /동의하지\s*않습니다|혜택을\s*받지\s*않|수신\s*거부|광고\s*받지|아니오|아니요|필수\s*[\/]\s*선택\s*통합/i, reason: (line) => `질문과 선택지의 방향이 소비자 의도와 일치하는지 확인해야 합니다: ${line}` },
   { type: "MISDIRECTED_HIERARCHY", version: "1", title: "잘못된 계층구조 검토", pattern: /작게|연하게|찾기\s*어려|눈에\s*띄지|거절.*숨|동의.*강조|구매.*강조/i, reason: (line) => `중요한 선택지의 시각적 강조와 대안 버튼의 구분을 확인해야 합니다: ${line}` },
   { type: "CANCELLATION_OBSTRUCTION", version: "1", title: "취소·탈퇴 방해 검토", pattern: /회원\s*탈퇴|구독\s*해지|정기\s*결제\s*해지|주문\s*취소|청약\s*철회|해지\s*신청/i, reason: (line) => `취소·탈퇴 경로가 첫 화면에서 쉽게 접근되는지 확인해야 합니다: ${line}` },
   { type: "PRICE_COMPARISON_OBSTRUCTION", version: "1", title: "가격비교 방해 검토", pattern: /월\s*납부|연\s*납부|단위\s*가격|개당|100g당|수수료\s*포함|총\s*비용/i, reason: (line) => `비교에 필요한 단위·총액·조건이 동일 기준으로 제공되는지 확인해야 합니다: ${line}` },
@@ -33,7 +33,7 @@ export function detectAdditionalPatterns(snapshot: Snapshot): Finding[] {
     if (!line || seen.has(rule.type)) continue;
     seen.add(rule.type);
     findings.push({
-      type: rule.type, status: "SUSPECTED", ruleVersion: rule.version, stage: snapshot.stage,
+      type: rule.type, status: "REVIEW_NEEDED", ruleVersion: rule.version, stage: snapshot.stage,
       reason: rule.reason(line), evidence: [snapshot], evidenceIds: evidenceIds([snapshot]),
     });
   }

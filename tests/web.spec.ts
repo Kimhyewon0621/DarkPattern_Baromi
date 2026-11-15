@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { expect, test } from "@playwright/test";
 
 const origin = "http://127.0.0.1:3100";
@@ -70,6 +70,9 @@ test("URL과 동의를 검증하고 대기 중인 진단을 중단한다", async
   const status = await (await request.get(api + "scans/" + scan.scanId)).json();
   expect(status.status).toBe("CANCELLED");
   expect(status.summary.notTested).toBe(3);
+  expect(status.currentStage).toBe("CANCELLED");
+  expect(Object.values(status.phaseResults).every((phase: any) => phase.status !== "PENDING" && phase.status !== "RUNNING")).toBe(true);
+  expect(status.phaseResults["product"].status).toBe("SKIPPED");
   expect((await request.get(api + "shops/" + shop.shopId + "/scans")).json()).resolves.toEqual([
     expect.objectContaining({ scanId: scan.scanId, status: "CANCELLED", purchasePath: "CART" }),
   ]);
@@ -105,8 +108,15 @@ test("웹에서 진단하고 증거를 확인한 후 같은 조건으로 재진�
   await page.getByLabel("쇼핑몰 URL").fill(riskyUrl);
   await page.getByRole("checkbox", { name: /자동 진단 권한/ }).check();
   await page.getByRole("button", { name: "진단 시작" }).click();
+  await expect(page.getByText("별도 탐색 영역", { exact: true })).toBeVisible();
+  for (const surface of ["상품 목록·카테고리·검색", "로그인·회원가입", "쿠폰·프로모션", "추천·인기·후기", "구독·멤버십·자동 갱신", "해지·탈퇴·환불", "배송·교환·반품·정책"]) {
+    await expect(page.getByText(surface, { exact: true })).toBeVisible();
+  }
+  await expect(page.getByText("진단 항목", { exact: true })).toBeVisible();
+  await expect(page.getByText("총 16개 유형")).toBeVisible();
   await page.getByRole("link", { name: "진단 결과 보기" }).click({ timeout: 60_000 });
   await page.waitForURL("**/report/*");
+  await expect(page.getByRole("heading", { name: "16개 유형별 검사 결과" })).toBeVisible();
   const reportUrl = page.url();
   const baselineScanId = new URL(reportUrl).pathname.split("/").at(-1);
   const downloadResponse = await page.request.get(origin + "/api/v1/scans/" + baselineScanId + "/report?download=1");
@@ -148,6 +158,37 @@ test("웹에서 진단하고 증거를 확인한 후 같은 조건으로 재진�
   await expect(page.getByRole("heading", { name: "이번에 미발견 0건" })).toBeVisible();
   await expect(page.getByRole("link", { name: "기준 보고서 보기" })).toHaveAttribute("href", new URL(reportUrl).pathname);
   await expect(page.getByRole("link", { name: "순차공개 가격책정" })).toBeVisible();
+});
+
+test("워커가 진단 시작 전에 실패해도 16개 유형과 실패 사유가 있는 보고서를 연다", async ({ page }) => {
+  test.setTimeout(60_000);
+  const api = origin + "/api/v1/";
+  const shop = await (await page.request.post(api + "shops", { data: { url: riskyUrl, consent: true } })).json();
+  const created = await page.request.post(api + "scans", { data: {
+    shopId: shop.shopId, profile: "CONTEST", flows: ["PURCHASE"], productLimit: 1, viewport: "DESKTOP",
+  } });
+  expect(created.status()).toBe(202);
+  const { scanId } = await created.json();
+  execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e",
+    "const { db } = await import('./src/db.ts'); await db().scan.update({ where: { id: process.argv[1] }, data: { credentialCiphertext: 'intentionally-invalid-ciphertext' } }); await db().$disconnect();",
+    scanId], { env: process.env, stdio: "inherit" });
+  worker = spawn(process.execPath, ["--import", "tsx", "scripts/worker.ts"], {
+    env: { ...process.env, BAROMI_SPRING_QUEUE_ENABLED: "false", BAROMI_SPRING_API_URL: "", DEMO_ORIGIN: origin },
+    stdio: "inherit", detached: true,
+  });
+  await expect.poll(async () => (await (await page.request.get(api + "scans/" + scanId)).json()).status, { timeout: 30_000 }).toBe("FAILED");
+  const status = await (await page.request.get(api + "scans/" + scanId)).json();
+  expect(status.hasReport).toBe(true);
+  await page.goto(origin + "/scan/" + scanId);
+  await page.getByRole("link", { name: "진단 결과 보기" }).click();
+  await expect(page.getByText(/진단이 종료된 이유/)).toBeVisible();
+  await expect(page.getByText("16개 유형")).toBeVisible();
+  const downloaded = await page.request.get(api + "scans/" + scanId + "/report?download=1");
+  expect(downloaded.status()).toBe(200);
+  const report = await downloaded.json();
+  expect(report.scanStatus).toBe("FAILED");
+  expect(Object.keys(report.ruleCoverage)).toHaveLength(16);
+  expect(report.collectionFailure).toContain("암호문");
 });
 
 test("웹 동적 검사 폼은 전용 테스트 계정을 스캔 요청에만 전달한다", async ({ page }) => {

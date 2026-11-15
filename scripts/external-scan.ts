@@ -1,5 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
-import { readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { db } from "../src/db";
 import { encryptCredentials } from "../src/credential-vault";
 import { runScanJob } from "../src/scan-job";
@@ -22,19 +23,44 @@ const hardTimeoutMs = Number.isFinite(requestedHardTimeout) ? Math.min(Math.max(
 const viewport = process.env.BAROMI_SMOKE_VIEWPORT === "MOBILE" ? "MOBILE" : "DESKTOP";
 const purchasePath = process.env.BAROMI_SMOKE_PURCHASE_PATH === "DIRECT" ? "DIRECT" : "CART";
 
+type PageTextEvidence = { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string };
+type PageInteractiveEvidence = { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string };
 type ScanSummary = {
   scanStatus: string; reached: string | null; collectionFailure: string | null; collectionFailureCode: string | null;
   explorationBlocker: unknown; stageTimingsMs: Record<string, number>; durationMs: number;
-  surfaceObservations: { kind: string; outcome: string; source?: string }[]; findings: string[];
-  reviewCandidates: { kind: string; stage: string; reason: string }[];
+  explorationMetrics: {
+    productLinksFound: number; productLinksConsidered: number; productLinksUnselected: number; productLinksVisited: number;
+    surfaceCandidates: number; surfaceCandidatesInspected: number; surfaceCandidatesUninspected: number;
+    purchaseActions: number; priceResponses: number;
+  };
+  phaseResults: Record<string, { status: string; durationMs?: number; reason?: string }>;
+  surfaceDestinations: { kind: string; href: string; text: string }[];
+  siteCrawl: { complete: boolean; visited: number; discovered: number; visitedStates: number; discoveredStates: number; uniqueVisitedUrls: number; uniqueDiscoveredUrls: number; productCards: number; failed: number; pending: string[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; skippedControls: { url: string; label: string; reason: string }[]; pages: { url: string; statePath: string[]; outcome: string; failureReason?: string; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound: string[]; productCardsFound: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactiveLabels: string[]; interactives: PageInteractiveEvidence[]; formCount: number }[] } | null;
+  ruleCoverage: Record<string, { status: string; reason: string; evidenceIds: string[] }>;
+  notTestedReasons: Record<string, string>;
+  snapshots: { stage: string; path: string }[];
+  surfaceObservations: { kind: string; outcome: string; source?: string }[];
+  findings: { type: string; stage: string; status: string; reason: string; evidenceIds: string[] }[];
+  reviewCandidates: { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string }[];
 };
 async function summarize(reportPath: string): Promise<ScanSummary> {
   const report = JSON.parse(await readFile(reportPath, "utf8")) as {
-    scanStatus?: string; snapshots?: { stage: string }[]; collectionFailure?: string | null; collectionFailureCode?: string | null;
+    scanStatus?: string; snapshots?: { stage: string; url: string }[]; collectionFailure?: string | null; collectionFailureCode?: string | null;
     explorationBlocker?: unknown; stageTimingsMs?: Record<string, number>; durationMs?: number;
+    explorationMetrics?: ScanSummary["explorationMetrics"];
+    phaseResults?: ScanSummary["phaseResults"];
+    surfaceDestinations?: ScanSummary["surfaceDestinations"];
+    siteCrawl?: {
+      complete: boolean; visitedUrlCount: number; discoveredUrlCount: number; visitedStateCount: number; discoveredStateCount: number; uniqueVisitedUrlCount: number; uniqueDiscoveredUrlCount: number; productCardCount: number; failedUrlCount: number; pendingUrls: string[];
+      unexploredControls: { url: string; label: string; reason: string }[];
+      nonNavigatingControls: { url: string; label: string; reason: string }[];
+      skippedControls: { url: string; label: string; reason: string }[];
+      pages: { url: string; statePath?: string[]; outcome: string; failureReason?: string; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound?: string[]; productCardsFound?: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactives: PageInteractiveEvidence[]; formsFound: { method: string; action: string }[] }[];
+    };
+    ruleCoverage?: Record<string, { status: string; reason: string; evidenceIds?: string[] }>;
     surfaceObservations?: { kind: string; outcome: string; source?: string }[];
-    reviewCandidates?: { kind: string; stage: string; reason: string }[];
-    findings?: { type: string; stage: string; reason: string }[];
+    reviewCandidates?: { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string }[];
+    findings?: { type: string; stage: string; status: string; reason: string; evidence?: { evidenceId?: string }[] }[];
   };
   return {
     scanStatus: report.scanStatus ?? "UNKNOWN",
@@ -44,10 +70,52 @@ async function summarize(reportPath: string): Promise<ScanSummary> {
     explorationBlocker: report.explorationBlocker ?? null,
     stageTimingsMs: report.stageTimingsMs ?? {},
     durationMs: report.durationMs ?? 0,
-    surfaceObservations: report.surfaceObservations ?? [],
-    findings: (report.findings ?? []).map(({ type, stage, reason }) => `${type}:${stage}:${reason}`).sort(),
-    reviewCandidates: (report.reviewCandidates ?? []).map(({ kind, stage, reason }) => ({ kind, stage, reason })),
+    explorationMetrics: report.explorationMetrics ?? {
+      productLinksFound: 0, productLinksConsidered: 0, productLinksUnselected: 0, productLinksVisited: 0,
+      surfaceCandidates: 0, surfaceCandidatesInspected: 0, surfaceCandidatesUninspected: 0,
+      purchaseActions: 0, priceResponses: 0,
+    },
+    phaseResults: Object.fromEntries(Object.entries(report.phaseResults ?? {}).map(([phase, result]) => [phase, {
+      status: result.status, durationMs: result.durationMs, reason: result.reason,
+    }])),
+    surfaceDestinations: (report.surfaceDestinations ?? []).map(({ kind, href, text }) => ({ kind, href, text: text.slice(0, 100) })),
+    siteCrawl: report.siteCrawl ? {
+      complete: report.siteCrawl.complete, visited: report.siteCrawl.visitedUrlCount,
+      discovered: report.siteCrawl.discoveredUrlCount, visitedStates: report.siteCrawl.visitedStateCount,
+      discoveredStates: report.siteCrawl.discoveredStateCount, uniqueVisitedUrls: report.siteCrawl.uniqueVisitedUrlCount,
+      uniqueDiscoveredUrls: report.siteCrawl.uniqueDiscoveredUrlCount, productCards: report.siteCrawl.productCardCount,
+      failed: report.siteCrawl.failedUrlCount,
+      pending: report.siteCrawl.pendingUrls, unexploredControls: report.siteCrawl.unexploredControls,
+      nonNavigatingControls: report.siteCrawl.nonNavigatingControls,
+      skippedControls: report.siteCrawl.skippedControls,
+      pages: report.siteCrawl.pages.map(({ url, statePath = [], outcome, failureReason, title, text, domText, linksFound, controlsFound = [], productCardsFound = [], bodyTextLength, anchorCount, interactiveCount, elementCount, hiddenTextElementCount, interactives, formsFound }) => ({
+        url, statePath, outcome, failureReason, title, text, domText, linksFound, controlsFound, productCardsFound, bodyTextLength, anchorCount, interactiveCount,
+        elementCount, hiddenTextElementCount, interactiveLabels: interactives.map(({ label }) => redactValidationText(label, credentials)).filter(Boolean),
+        interactives: interactives.map((item) => ({ ...item, label: redactValidationText(item.label, credentials) })), formCount: formsFound.length,
+      })),
+    } : null,
+    ruleCoverage: Object.fromEntries(Object.entries(report.ruleCoverage ?? {}).map(([type, result]) => [type, {
+      status: result.status, reason: redactValidationText(result.reason, credentials), evidenceIds: result.evidenceIds ?? [],
+    }])),
+    notTestedReasons: Object.fromEntries(Object.entries(report.ruleCoverage ?? {}).filter(([, result]) => result.status === "NOT_TESTED").map(([type, result]) => [type, result.reason])),
+    snapshots: (report.snapshots ?? []).map(({ stage, url }) => ({ stage, path: (() => { try { return new URL(url).pathname; } catch { return ""; } })() })),
+    surfaceObservations: (report.surfaceObservations ?? []).map(({ kind, outcome, source }) => ({ kind, outcome, source })),
+    findings: (report.findings ?? []).map(({ type, stage, status, reason, evidence }) => ({
+      type, stage, status, reason: redactValidationText(reason, credentials),
+      evidenceIds: (evidence ?? []).map(({ evidenceId }) => evidenceId).filter(Boolean) as string[],
+    })).sort((a, b) => a.type.localeCompare(b.type)),
+    reviewCandidates: (report.reviewCandidates ?? []).map((candidate) => ({
+      ...candidate, text: redactValidationText(candidate.text, credentials), reason: redactValidationText(candidate.reason, credentials),
+    })),
   };
+}
+
+function redactValidationText(value: string, secrets: { username: string; password: string }) {
+  return value
+    .replaceAll(secrets.username, "[계정정보 가림]")
+    .replaceAll(secrets.password, "[계정정보 가림]")
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[이메일 가림]")
+    .replace(/(?:\+?82[- ]?)?0?1[016789][- ]?\d{3,4}[- ]?\d{4}/g, "[연락처 가림]");
 }
 
 function stableSummary(report: ScanSummary) {
@@ -58,8 +126,47 @@ function stableSummary(report: ScanSummary) {
     collectionFailureCode: report.collectionFailureCode,
     explorationBlocker: report.explorationBlocker,
     surfaceObservations: report.surfaceObservations,
+    siteCrawl: report.siteCrawl ? { complete: report.siteCrawl.complete, visited: report.siteCrawl.visited, discovered: report.siteCrawl.discovered, failed: report.siteCrawl.failed, pending: report.siteCrawl.pending, unexploredControls: report.siteCrawl.unexploredControls, nonNavigatingControls: report.siteCrawl.nonNavigatingControls, skippedControls: report.siteCrawl.skippedControls, pages: report.siteCrawl.pages } : null,
     findings: report.findings,
   });
+}
+
+function compactReport(report: ScanSummary) {
+  const crawl = report.siteCrawl;
+  const unexplored = new Map<string, number>();
+  for (const item of crawl?.unexploredControls ?? []) {
+    const key = `${item.label} · ${item.reason}`;
+    unexplored.set(key, (unexplored.get(key) ?? 0) + 1);
+  }
+  return {
+    scanStatus: report.scanStatus,
+    durationMs: report.durationMs,
+    stageTimingsMs: report.stageTimingsMs,
+    phaseResults: report.phaseResults,
+    explorationMetrics: report.explorationMetrics,
+    crawl: crawl ? {
+      complete: crawl.complete,
+      uniqueVisitedUrls: crawl.uniqueVisitedUrls,
+      uniqueDiscoveredUrls: crawl.uniqueDiscoveredUrls,
+      visitedStates: crawl.visitedStates,
+      discoveredStates: crawl.discoveredStates,
+      productCards: crawl.productCards,
+      failed: crawl.failed,
+      pending: crawl.pending.length,
+      unexploredControls: [...unexplored.entries()].map(([issue, count]) => ({ issue, count })),
+      nonNavigatingControls: crawl.nonNavigatingControls,
+      skippedControls: crawl.skippedControls,
+      pages: crawl.pages.map(({ url, statePath, outcome, failureReason, title, text, domText, controlsFound, productCardsFound, elementCount, hiddenTextElementCount, interactiveLabels, interactives, formCount }) => ({
+        url, statePath, outcome, ...(failureReason ? { failureReason } : {}), title, textLength: text.length,
+        domTextCount: domText.length, controlsFound, productCardsFound, elementCount, hiddenTextElementCount,
+        interactiveCount: interactives.length,
+        selectedControls: interactives.filter(({ selected }) => selected).map(({ label, type }) => ({ label, type })),
+        formCount,
+      })),
+    } : null,
+    ruleCoverage: report.ruleCoverage,
+    findings: report.findings,
+  };
 }
 
 async function main() {
@@ -72,19 +179,26 @@ async function main() {
   try {
     await store.shop.create({ data: { id: shopId, url: publicTarget.url, ownerHash, verifiedAt: new Date() } });
     const reports: ScanSummary[] = [];
+    const artifactBase = process.env.BAROMI_SMOKE_ARTIFACT_DIR ?? "scan-results/external-validation";
+    const artifactsDirectory = join(artifactBase, `${new Date().toISOString().replace(/[:.]/g, "-")}-${new URL(publicTarget.url).hostname}`);
+    await mkdir(artifactsDirectory, { recursive: true });
     for (let attempt = 0; attempt < repeatCount; attempt++) {
       const scanId = randomUUID(); scanIds.push(scanId);
       await store.scan.create({ data: { id: scanId, shopId, scenario: "public", executionMode: "DYNAMIC", viewport, purchasePath, targetUrl: publicTarget.url, status: "RUNNING", credentialCiphertext: encryptCredentials(credentials) } });
       const reportPath = await runScanJob(scanId, publicTarget.url);
       if (!reportPath) throw new Error("외부 진단 보고서 경로가 없습니다.");
-      reports.push(await summarize(reportPath));
+      const summary = await summarize(reportPath);
+      reports.push(summary);
+      await writeFile(join(artifactsDirectory, `run-${attempt + 1}.json`), JSON.stringify(summary, null, 2) + "\n");
       await rm(evidenceDirectory(scanId), { recursive: true, force: true }).catch(() => undefined);
     }
     const baseline = stableSummary(reports[0]);
     const matchingRuns = reports.filter((report) => stableSummary(report) === baseline).length;
     const durations = reports.map((report) => report.durationMs);
-    console.log(JSON.stringify({ ok: true, scanIds, repeatCount, matchingRuns, repeatability: matchingRuns / reports.length,
-      durationMs: { min: Math.min(...durations), max: Math.max(...durations), average: durations.reduce((sum, value) => sum + value, 0) / durations.length }, reports }));
+    const result = { ok: true, scanIds, repeatCount, matchingRuns, repeatability: matchingRuns / reports.length,
+      durationMs: { min: Math.min(...durations), max: Math.max(...durations), average: durations.reduce((sum, value) => sum + value, 0) / durations.length }, artifactsDirectory, reports: reports.map(compactReport) };
+    await writeFile(join(artifactsDirectory, "result.json"), JSON.stringify(result, null, 2) + "\n");
+    console.log(JSON.stringify(result));
   } finally {
     clearTimeout(hardTimeout);
     await store.scan.deleteMany({ where: { shopId } }).catch(() => undefined);

@@ -45,6 +45,12 @@ export async function observePaidOptionChanges(page: Page, main: Locator, stage:
         amountDeltaWon: before !== null && after !== null ? before - after : null,
         outcome: before !== null && after !== null && before !== after ? "OBSERVED" : "NO_LIVE_CHANGE",
       });
+    } catch {
+      // Evidence enrichment must never turn a successfully reached purchase
+      // stage into a failed journey. Reactive storefronts may replace the
+      // checkbox or its modal immediately after the click; the initial checked
+      // state remains available in the snapshot even when reversible toggling
+      // cannot be completed safely.
     } finally {
       await control.check({ timeout: 2_000 }).catch(() => {});
     }

@@ -1,0 +1,1 @@
+ALTER TABLE "Scan" ADD COLUMN "phaseResultsJson" TEXT NOT NULL DEFAULT '{}';

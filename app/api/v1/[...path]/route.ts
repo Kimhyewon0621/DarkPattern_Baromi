@@ -18,6 +18,8 @@ import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringSho
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
 import { supabaseOwner } from "../../../../src/supabase-auth";
+import { buildRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
+import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
 type Context = { params: Promise<{ path: string[] }> };
 type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string };
@@ -268,7 +270,15 @@ export async function POST(request: NextRequest, context: Context) {
     const queued = await db().scan.updateMany({
       where: { ...where, status: "QUEUED" }, data: { status: "CANCELLED", credentialCiphertext: null },
     });
-    if (queued.count) return Response.json({ status: "CANCELLED" });
+    if (queued.count) {
+      const scan = await db().scan.findUnique({ where: { id }, select: { purchasePath: true, executionMode: true, phaseResultsJson: true } });
+      if (scan) {
+        const phases = closeCancelledScanPhases(parseScanPhases(scan.phaseResultsJson,
+          initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC")));
+        await db().scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: "CANCELLED" } });
+      }
+      return Response.json({ status: "CANCELLED" });
+    }
     const scan = await db().scan.findFirst({ where, select: { status: true } });
     if (scan?.status === "RUNNING") {
       const changed = await db().scan.updateMany({
@@ -420,7 +430,12 @@ export async function GET(request: NextRequest, context: Context) {
   });
   if (!scan) return notFound();
   const active = ["QUEUED", "RUNNING"].includes(scan.status);
+  const phaseResults = parseScanPhases(scan.phaseResultsJson, initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC"));
   const storedReport = !active && scan.reportPath ? await getReport(scan.reportPath).catch(() => null) : null;
+  const reportEvidence = storedReport as unknown as Parameters<typeof buildRuleCoverage>[0] | null;
+  const ruleCoverage: RuleCoverage | null = active ? null : reportEvidence
+    ? ((storedReport as unknown as { ruleCoverage?: RuleCoverage }).ruleCoverage ?? buildRuleCoverage(reportEvidence))
+    : null;
   const observedStages = new Set(storedReport?.snapshots.map(({ stage }) => stage) ?? []);
   const requiredStages = scan.purchasePath === "DIRECT" ? new Set<Stage>(["product", "checkout"]) : new Set<Stage>(stages);
   const coverage = Object.fromEntries(stages.map((stage, index) => [stage,
@@ -428,16 +443,21 @@ export async function GET(request: NextRequest, context: Context) {
       : !requiredStages.has(stage) ? "SKIPPED"
         : active ? (index < scan.progress ? "COVERED" : "PENDING") : "BLOCKED",
   ]));
-  const progressStages = scan.purchasePath === "DIRECT" ? 2 : stages.length;
+  const phaseValues = Object.values(phaseResults);
+  const terminalPhases = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus)).length;
+  const progressStages = phaseValues.length;
   const summary = {
     suspected: scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
     reviewNeeded: scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
-    notTested: active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
+    notObserved: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_OBSERVED").length : 0,
+    notTested: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_TESTED").length
+      : active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
   };
   const surfaceObservations = ((storedReport as unknown as { surfaceObservations?: { kind: DiagnosticSurfaceKind; outcome: string }[] } | null)?.surfaceObservations ?? []);
   const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => {
     if (scan.executionMode !== "DYNAMIC") return [kind, "SKIPPED"];
     if (active) return [kind, "PENDING"];
+    if (!storedReport) return [kind, "BLOCKED"];
     const observations = surfaceObservations.filter((item) => item.kind === kind);
     return [kind, observations.some((item) => item.outcome === "OBSERVED") ? "COVERED"
       : observations.some((item) => item.outcome === "DISCOVERED") ? "DISCOVERED"
@@ -449,7 +469,8 @@ export async function GET(request: NextRequest, context: Context) {
       durationMs: scan.durationMs,
       purchasePath: scan.purchasePath,
       status: scan.status, cancelRequested: scan.cancelRequested, currentStage: scan.currentStage,
-      progress: active ? Math.round(Math.min(scan.progress, progressStages) * 100 / progressStages) : 100, coverage, surfaceCoverage, summary,
+      progress: active ? Math.round(Math.min(terminalPhases, progressStages) * 100 / progressStages) : 100, coverage, surfaceCoverage, phaseResults, ruleCoverage, summary,
+      hasReport: Boolean(scan.reportPath),
     });
   }
   if (action === "findings") return Response.json(scan.findings);
@@ -477,7 +498,7 @@ export async function GET(request: NextRequest, context: Context) {
     } : null;
     const response = Response.json({ ...report, viewport: scan.viewport, purchasePath: scan.purchasePath,
       durationMs: scan.durationMs,
-      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, summary,
+      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, ruleCoverage, summary,
       aiEligible: scan.shop?.plan === "PREMIUM", aiReview,
       findings });
     if (request.nextUrl.searchParams.get("download") === "1") {
