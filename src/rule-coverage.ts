@@ -26,11 +26,6 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
   const observedSurfaces = new Set(surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ kind }) => kind));
   const allEvidenceIds = [...ids(snapshots), ...surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ evidenceId }) => evidenceId)];
   const observedSurface = (kind: SurfaceObservation["kind"]) => surfaceObservations.filter((item) => item.kind === kind && item.outcome === "OBSERVED");
-  const surfaceSignals: Partial<Record<keyof typeof legalRules, { kind: SurfaceObservation["kind"]; pattern: RegExp; reason: string }>> = {
-    DISGUISED_AD: { kind: "RECOMMENDATION", pattern: /광고|협찬|스폰서|sponsored|\bad\b/i, reason: "추천·콘텐츠 영역에서 광고성 표현을 확인했습니다. 실제 광고 표기와 일반 콘텐츠의 구분을 검토하세요." },
-    FALSE_RECOMMENDATION: { kind: "RECOMMENDATION", pattern: /구매자?\s*추천|베스트\s*리뷰|인기\s*상품|추천\s*순위|최저가|실시간\s*인기/i, reason: "추천·인기·후기 표현을 확인했습니다. 추천 근거와 산정 기준을 추가 확인해야 합니다." },
-    BAIT_SELLING: { kind: "CATALOG", pattern: /품절|재고\s*없음|판매\s*불가|구매\s*불가|sold\s*out|out\s*of\s*stock/i, reason: "목록·카테고리 영역에서 구매 불가 표현을 확인했습니다. 노출 상품의 실제 구매 가능 여부를 대조하세요." },
-  };
   const covered = (requiredStages: Snapshot["stage"][], requiredSurfaces: SurfaceObservation["kind"][] = [], controlStages: Snapshot["stage"][] = []) =>
     requiredStages.every((stage) => stages.has(stage)) && requiredSurfaces.every((kind) => observedSurfaces.has(kind))
     && controlStages.every((stage) => snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined));
@@ -57,6 +52,19 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     CANCELLATION_OBSTRUCTION: { stages: [], surfaces: ["SUBSCRIPTION", "CANCELLATION"] },
     PRICE_COMPARISON_OBSTRUCTION: { stages: ["product", "checkout"] },
   };
+  const semanticReviewRequired = new Set<keyof typeof legalRules>([
+    "URGENCY_SCARCITY", "HIDDEN_INFO", "FALSE_DISCOUNT", "DISGUISED_AD", "CONFIRM_SHAMING",
+    "FORCED_ACTION", "HIDDEN_SUBSCRIPTION", "FALSE_RECOMMENDATION", "BAIT_SELLING",
+    "TRICK_QUESTION", "MISDIRECTED_HIERARCHY", "CANCELLATION_OBSTRUCTION", "PRICE_COMPARISON_OBSTRUCTION",
+  ]);
+  const evidenceFor = (type: keyof typeof legalRules) => {
+    const requirement = requirements[type];
+    const stageIds = snapshots.filter(({ stage }) => requirement.stages.includes(stage)).map((item) => item.evidenceId ?? `evidence:${item.stage}`);
+    const surfaceIds = surfaceObservations.filter((item) => item.outcome === "OBSERVED" && requirement.surfaces?.includes(item.kind)).map(({ evidenceId }) => evidenceId);
+    const controlIds = snapshots.filter((snapshot) => requirement.controlStages?.includes(snapshot.stage) && snapshot.decisionControls !== undefined)
+      .map((item) => item.evidenceId ?? `evidence:${item.stage}`);
+    return [...new Set([...stageIds, ...surfaceIds, ...controlIds])].slice(0, 20);
+  };
 
   return Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => {
     const finding = findingByType.get(type);
@@ -69,14 +77,6 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
       status: "REVIEW_NEEDED" as const, reason: reviewCandidate.reason,
       evidenceIds: reviewCandidate.evidenceIds,
     }];
-    const signal = surfaceSignals[type];
-    if (signal) {
-      const matches = observedSurface(signal.kind).filter(({ text, title }) => signal.pattern.test(`${title} ${text}`));
-      if (matches.length) return [type, {
-        status: "REVIEW_NEEDED" as const, reason: signal.reason,
-        evidenceIds: matches.map(({ evidenceId }) => evidenceId),
-      }];
-    }
     if (type === "CANCELLATION_OBSTRUCTION") {
       const subscription = observedSurface("SUBSCRIPTION");
       const cancellation = observedSurface("CANCELLATION");
@@ -88,7 +88,7 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     }
     const requirement = requirements[type];
     if (type === "SNEAKY_CART_ADD" && snapshots.find(({ stage }) => stage === "cart")?.cartItemCount === undefined) {
-      return [type, { status: "NOT_TESTED" as const, reason: "장바구니의 품목 수를 확정할 수 없어 자동 추가 여부를 검사하지 못했습니다.", evidenceIds: allEvidenceIds }];
+      return [type, { status: "NOT_TESTED" as const, reason: "장바구니의 품목 수를 확정할 수 없어 자동 추가 여부를 검사하지 못했습니다.", evidenceIds: evidenceFor(type) }];
     }
     const requiredSurfaces = requirement.surfaces ?? [];
     const requiredControls = requirement.controlStages ?? [];
@@ -97,9 +97,20 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
       return [type, {
         status: "NOT_TESTED" as const,
         reason: `필요한 증거를 수집하지 못했습니다: ${gaps.join(", ")}.`,
-        evidenceIds: allEvidenceIds,
+        evidenceIds: evidenceFor(type),
       }];
     }
+    const inspectedControls = requiredControls.length > 0 && requiredControls.every((stage) =>
+      snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined),
+    );
+    const controlsPresent = requiredControls.some((stage) =>
+      snapshots.some((snapshot) => snapshot.stage === stage && (snapshot.decisionControls?.length ?? 0) > 0),
+    );
+    if (semanticReviewRequired.has(type) && (!inspectedControls || controlsPresent)) return [type, {
+      status: "NOT_TESTED" as const,
+      reason: "화면 증거는 수집했지만 문구·맥락의 의미를 자동 판정하지 않았습니다. 근거 검토가 필요합니다.",
+      evidenceIds: evidenceFor(type),
+    }];
     return [type, {
       status: "NOT_OBSERVED" as const,
       reason: "검사한 범위에서 이 유형의 신호가 관찰되지 않았습니다.",

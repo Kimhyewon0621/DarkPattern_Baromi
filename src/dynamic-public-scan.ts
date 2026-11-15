@@ -10,7 +10,7 @@ import { scanComparisonVersion } from "./scan-comparison";
 import { detect, type InteractionEvidence, type Snapshot } from "./rules";
 import { detectForcedAction } from "./detectors/interaction-patterns";
 import { feeMentionsFromText } from "./price-text";
-import { collectCrawlRuleCandidates, collectCrawlVisualCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
+import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
 import { classifyReviewCandidates } from "./review-classifier";
 import { structuredProductLinks } from "./structured-product-links";
 import type { TestCredentials } from "./credential-vault";
@@ -459,7 +459,7 @@ export async function scanDynamicPublicShop(
         evidenceIds: observations.map(({ evidenceId }) => evidenceId),
       });
     }
-    const reviewCandidates = [...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectCrawlVisualCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)];
+    const reviewCandidates = [...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)];
     const findings = [...detect(snapshots, firstPriceExposure?.feeMentions), ...detectForcedAction(journey.blocker ?? null, snapshots)];
     const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, siteCrawlComplete: siteCrawl.complete, reviewCandidates });
     const report = {

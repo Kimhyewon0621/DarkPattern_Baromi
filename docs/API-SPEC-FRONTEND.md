@@ -150,6 +150,8 @@
   "findings": [],
   "snapshots": [],
   "coverage": {},
+  "ruleCoverage": { "PRESELECTION": { "status": "NOT_TESTED", "reason": "...", "evidenceIds": [] } },
+  "reviewCandidates": [{ "id": "review-id", "kind": "SEMANTIC_REVIEW", "stage": "surface", "text": "관찰 원문", "reason": "의미 검토 필요", "evidenceIds": ["evidence-id"] }],
   "surfaceCoverage": {},
   "summary": { "suspected": 0, "reviewNeeded": 0, "notTested": 0 },
   "comparison": null,
@@ -157,6 +159,8 @@
   "aiReview": null
 }
 ```
+
+`ruleCoverage`는 16개 유형을 각각 `SUSPECTED|REVIEW_NEEDED|NOT_OBSERVED|NOT_TESTED`로 반환한다. `NOT_OBSERVED`는 해당 유형의 필수 화면·선택 구조를 실제 검사한 경우에만 사용한다. 화면 문구를 수집했어도 의미를 유형에 연결하지 않은 후보는 `reviewCandidates`에 `kind: SEMANTIC_REVIEW`로 담고 `ruleType`을 붙이지 않는다. 프론트는 이 후보를 특정 위반 유형의 발견 건수로 계산하지 않는다. 구조화된 선택 상태·금액처럼 규칙으로 확인된 사실은 `findings`에 별도로 반환한다.
 
 다운로드는 `GET /api/v1/scans/:scanId/report?download=1`이며 `Content-Disposition: attachment` 응답을 반환한다. SQLite·Spring/PostgreSQL 저장소에서 같은 JSON 보고서를 받는다.
 

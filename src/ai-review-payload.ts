@@ -73,9 +73,9 @@ function crawlEvidence(item: CrawledSitePage, candidate: ReviewCandidate): Revie
   const relevant = candidate.text.toLocaleLowerCase();
   const selectedControls = item.interactives.filter((control) => control.selected === true)
     .map(({ label }) => redact(label).slice(0, 300)).filter(Boolean).slice(0, 20);
-  const matchingVisualFacts = candidate.kind === "VISUAL_ACCESSIBILITY"
-    ? item.domText.filter((entry) => entry.visible && (entry.text.toLocaleLowerCase().includes(relevant) || relevant.includes(entry.text.toLocaleLowerCase())))
-      .slice(0, 5).map(({ text, fontSize, color, opacity, bounds }) => ({ text: redact(text).slice(0, 300), fontSize, color, opacity, bounds: { width: bounds.width, height: bounds.height } }))
+  const matchingVisualFacts = candidate.kind === "VISUAL_ACCESSIBILITY" || candidate.kind === "SEMANTIC_REVIEW"
+    ? item.domText.filter((entry) => entry.visible && (candidate.kind === "SEMANTIC_REVIEW" || entry.text.toLocaleLowerCase().includes(relevant) || relevant.includes(entry.text.toLocaleLowerCase())))
+      .slice(0, candidate.kind === "SEMANTIC_REVIEW" ? 24 : 5).map(({ text, fontSize, color, opacity, bounds }) => ({ text: redact(text).slice(0, 300), fontSize, color, opacity, bounds: { width: bounds.width, height: bounds.height } }))
     : undefined;
   const text = item.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const context = text.filter((line) => !relevant || line.toLocaleLowerCase().includes(relevant));

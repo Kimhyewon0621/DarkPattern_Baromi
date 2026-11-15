@@ -1,9 +1,6 @@
 import { detectPreselection } from "./detectors/preselection";
 import { detectDripPricing } from "./detectors/drip-pricing";
-import { detectUrgencyScarcity } from "./detectors/urgency-scarcity";
-import { detectAdditionalPatterns } from "./detectors/additional-patterns";
 import { detectSneakyCartAdd } from "./detectors/sneaky-cart";
-import { detectInteractionPatterns } from "./detectors/interaction-patterns";
 import type { Stage } from "./demo";
 
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -86,10 +83,7 @@ export function detect([product, ...later]: Snapshot[], priorDisclosures: PriorF
   const findings = [
     ...[product, ...later].flatMap((snapshot) => detectPreselection(snapshot)),
     ...detectDripPricing(product, later, priorDisclosures),
-    ...detectUrgencyScarcity(product),
     ...later.flatMap((snapshot) => detectSneakyCartAdd(snapshot)),
-    ...[product, ...later].flatMap((snapshot) => detectAdditionalPatterns(snapshot)),
-    ...[product, ...later].flatMap((snapshot) => detectInteractionPatterns(snapshot)),
   ];
   // A wording signal can persist across product/cart/checkout snapshots. Keep
   // the first occurrence as the canonical finding so reports do not show the
