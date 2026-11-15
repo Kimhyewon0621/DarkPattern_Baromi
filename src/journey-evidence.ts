@@ -30,17 +30,33 @@ export async function observePaidOptionChanges(page: Page, main: Locator, stage:
   for (let index = 0; index < count; index++) {
     const control = controls.nth(index);
     if (!await control.isVisible() || await control.isDisabled() || !await control.isChecked()) continue;
-    const label = await control.evaluate((node: HTMLInputElement) =>
-      Array.from(node.labels ?? [], (item) => item.innerText.trim()).join(" "));
+    const label = await control.evaluate((node: HTMLInputElement) => {
+      const labelled = Array.from(node.labels ?? [], (item) => item.innerText.trim()).join(" ");
+      if (labelled) return labelled;
+      // Unlabelled custom rows: use the closest ancestor text that names an amount.
+      for (let current = node.parentElement, depth = 0; current && depth < 4; current = current.parentElement, depth++) {
+        const text = current.innerText.trim();
+        if (/\d[\d,]*\s*원/.test(text)) return text.slice(0, 300);
+      }
+      return "";
+    });
     if (!won(label).some((amount) => amount > 0)) continue;
     const before = await visibleTotal(main);
+    const beforeText = await page.locator("body").innerText().catch(() => "");
     try {
-      await control.uncheck({ timeout: 2_000 });
-      await page.waitForTimeout(150);
+      // Click instead of uncheck(): some shops keep the box checked and open a
+      // decline confirmation instead. Record what actually happened; never
+      // press a button inside that confirmation.
+      await control.click({ timeout: 2_000 });
+      await page.waitForTimeout(250);
+      const afterSelected = await control.isChecked();
+      const revealedText = (await page.locator("body").innerText().catch(() => "")).split("\n")
+        .map((line) => line.trim()).filter((line) => line && !beforeText.includes(line)).slice(0, 12);
+      if (revealedText.length) await page.keyboard.press("Escape").catch(() => {});
       const after = await visibleTotal(main);
       evidence.push({
         id: `${stage}:paid-option:${index}`, stage, kind: "PAID_OPTION_TOGGLE", capturedAt: new Date().toISOString(),
-        controlLabel: label, beforeSelected: true, afterSelected: false,
+        controlLabel: label, beforeSelected: true, afterSelected, ...(revealedText.length ? { revealedText } : {}),
         beforeTotalWon: before, afterTotalWon: after,
         amountDeltaWon: before !== null && after !== null ? before - after : null,
         outcome: before !== null && after !== null && before !== after ? "OBSERVED" : "NO_LIVE_CHANGE",

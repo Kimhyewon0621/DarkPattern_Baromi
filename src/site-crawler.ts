@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Page } from "playwright";
 import { waitForDomQuiet } from "./purchase-journey";
+import type { TestCredentials } from "./credential-vault";
+import { looksLoggedOut, openLoginForm, submitLoginForm } from "./test-login";
 
 export type CrawledSitePage = {
   evidenceId: string;
@@ -26,6 +28,7 @@ export type CrawledSitePage = {
   anchorCount: number;
   interactiveCount: number;
   capturedAt: string;
+  durationMs?: number;
   failureReason?: string;
 };
 
@@ -57,6 +60,10 @@ export type SiteCrawlResult = {
   failedUrlCount: number;
   maxDepth: number;
   durationMs: number;
+  /** SPA states whose normalized screen equals an already recorded state (timers, live counters). */
+  duplicateStates: { url: string; statePath: string[]; duplicateOf: string }[];
+  /** True when the login session did not survive a reload, so every state replays the test login first. */
+  loginReplayed: boolean;
   stopReason?: string;
 };
 
@@ -238,7 +245,7 @@ async function loadLazyContent(page: Page, maxScrollSteps = 60) {
     const bodyText = document.body?.innerText ?? '';
     return {
       height: document.documentElement.scrollHeight, textLength: bodyText.length,
-      textHash: Array.from(bodyText).slice(0, 20000).reduce((hash, character) => (Math.imul(hash, 31) + character.charCodeAt(0)) | 0, 7),
+      textHash: Array.from(bodyText.replace(/\\d+/g, '#')).slice(0, 20000).reduce((hash, character) => (Math.imul(hash, 31) + character.charCodeAt(0)) | 0, 7),
       links: document.querySelectorAll('a[href]').length, elements: document.body?.querySelectorAll('*').length ?? 0,
       scrollY: window.scrollY, viewport: window.innerHeight, scrollTargets: targets.length,
       overflowedTargets: targets.filter(element => element.scrollTop + element.clientHeight < element.scrollHeight - 8).length,
@@ -265,7 +272,7 @@ async function loadLazyContent(page: Page, maxScrollSteps = 60) {
       }).map(element => element.scrollTop).join(',');
       return document.documentElement.scrollHeight > previous.height || window.scrollY !== previous.scrollY || positions !== previous.scrollPositions ||
         (body?.innerText.length ?? 0) > previous.textLength || document.querySelectorAll('a[href]').length !== previous.links ||
-        body?.querySelectorAll('*').length !== previous.elements || Array.from(body?.innerText ?? '').slice(0, 20000).reduce((hash, character) => (Math.imul(hash, 31) + character.charCodeAt(0)) | 0, 7) !== previous.textHash;
+        body?.querySelectorAll('*').length !== previous.elements || Array.from((body?.innerText ?? '').replace(/\\d+/g, '#')).slice(0, 20000).reduce((hash, character) => (Math.imul(hash, 31) + character.charCodeAt(0)) | 0, 7) !== previous.textHash;
     }`, before, { timeout: 350, polling: 100 }).catch(() => undefined);
     const after = await page.evaluate(metricsScript) as typeof last;
     const atBottom = after.scrollY + after.viewport >= after.height - 4 && after.overflowedTargets === 0;
@@ -415,18 +422,30 @@ async function visibleStateSignature(page: Page) {
         const element = node as HTMLElement;
         const isInput = element instanceof HTMLInputElement;
         const isOption = element instanceof HTMLOptionElement;
-        return [element.tagName, (element.innerText || element.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim(), element.className,
+        return [element.tagName, (element.innerText || element.getAttribute("aria-label") || "").replace(/\s+/g, " ").replace(/\d+/g, "#").trim(),
           element.getAttribute("aria-selected"), element.getAttribute("aria-pressed"), element.getAttribute("aria-current"),
           element.getAttribute("data-state"), element.getAttribute("data-active"), isInput ? (element as HTMLInputElement).checked : null, isOption ? (element as HTMLOptionElement).selected : null,
           element.getAttribute("href"), element.hasAttribute("disabled")];
       });
-    return JSON.stringify([location.href, bodyElement.innerText, controls]);
+    // Countdown timers, "N명 조회중" and live order tickers change digits only.
+    // Mask digits so they do not register as new screens; added/removed text,
+    // dialogs, tabs and selection attributes still change the signature.
+    return JSON.stringify([location.href, bodyElement.innerText.replace(/\d+/g, "#"), controls]);
   });
 }
 
-async function restoreStatePath(page: Page, statePath: string[], controlIndexes: (number | null)[] = []) {
+const loginState = "[테스트 계정 로그인]";
+
+async function replayLogin(page: Page, credentials: TestCredentials | undefined) {
+  if (!credentials || !await openLoginForm(page)) return false;
+  return submitLoginForm(page, credentials).then(() => true, () => false);
+}
+
+async function restoreStatePath(page: Page, statePath: string[], controlIndexes: (number | null)[], credentials: TestCredentials | undefined) {
   for (const [index, state] of statePath.entries()) {
-    const restored = state.startsWith(productCardActionPrefix)
+    const restored = state === loginState
+      ? await replayLogin(page, credentials)
+      : state.startsWith(productCardActionPrefix)
       ? await openProductCard(page, state.slice(productCardActionPrefix.length))
       : state.startsWith(searchActionPrefix)
         ? await submitSearchAction(page, state.slice(searchActionPrefix.length))
@@ -440,7 +459,7 @@ async function restoreStatePath(page: Page, statePath: string[], controlIndexes:
 export async function crawlShopSite(
   sourcePage: Page,
   targetUrl: string,
-  credentials: { username: string; password: string } | undefined,
+  credentials: TestCredentials | undefined,
   onProgress?: (progress: SiteCrawlProgress) => Promise<void>,
   options: CrawlOptions = {},
 ): Promise<SiteCrawlResult> {
@@ -466,15 +485,40 @@ export async function crawlShopSite(
   // The same product is commonly repeated in “featured” and category grids.
   // Visit its detail once, while still visiting every distinct category page.
   const discoveredProductCards = new Set<string>();
+  // Product cards are explored through their own card action. Their whole-card
+  // text must not also become a generic control that fails behind an open modal.
+  const productCardTitles = new Set<string>();
+  const isProductCardControl = (label: string) => [...productCardTitles].some((title) => label.includes(title));
   const exploredNavigationLabels = new Set<string>();
   const pages: CrawledSitePage[] = [];
   let stopReason: string | undefined;
   let maxDepth = 0;
   let startedVisits = 0;
+  const duplicateStates: SiteCrawlResult["duplicateStates"] = [];
+  const stateSignatures = new Map<string, string>();
+  // In-memory SPA sessions are lost on every page load. When a fresh page in
+  // the authenticated context is logged out again, prefix every crawl node with
+  // the test login so authenticated screens are what gets replayed and read.
+  let rootStatePath: string[] = [];
+  if (credentials) {
+    const check = await sourcePage.context().newPage();
+    try {
+      await check.goto(target.href, { waitUntil: "domcontentloaded", timeout: pageTimeoutMs });
+      await waitForDomQuiet(check);
+      await waitForShopContent(check);
+      if (await looksLoggedOut(check)) rootStatePath = [loginState];
+    } catch {
+      rootStatePath = [loginState];
+    } finally {
+      await check.close().catch(() => undefined);
+    }
+  }
 
   const nodeKey = (url: string, statePath: string[], controlIndexes: (number | null)[] = []) =>
     `${url}::state:${statePath.map((label, index) => `${label}#${controlIndexes[index] ?? "-"}`).join(" > ")}`;
-  const enqueue = (raw: string, base: string, discoveredFrom: string | null, depth: number, statePath: string[] = [], controlIndexes: (number | null)[] = []) => {
+  const enqueue = (raw: string, base: string, discoveredFrom: string | null, depth: number, path: string[] = [], indexes: (number | null)[] = []) => {
+    const statePath = path.length ? path : rootStatePath;
+    const controlIndexes = path.length ? indexes : rootStatePath.map(() => null);
     const normalized = normalizeUrl(raw, base, target.hostname);
     if (!normalized.url) {
       if (normalized.reason) {
@@ -574,6 +618,7 @@ export async function crawlShopSite(
       if (visited.has(itemKey)) continue;
       visited.add(itemKey);
       startedVisits++;
+      const visitStartedAt = Date.now();
       const visitedUrlsAtStart = new Set([...pages.map(({ url }) => url), item.url]);
       const discoveredUrlsAtStart = new Set([...frontier.map(({ url }) => url), ...visitedUrlsAtStart]);
       await onProgress?.({
@@ -586,7 +631,7 @@ export async function crawlShopSite(
       let text = "";
       let links: { href: string; text: string }[] = [];
       let controls: string[] = [];
-      let controlCandidates: { label: string; index: number; navigationItem: boolean; active: boolean }[] = [];
+      let controlCandidates: { label: string; index: number; navigationItem: boolean; active: boolean; obscured: boolean }[] = [];
       let productCards: { index: number; title: string; identity: string }[] = [];
       let domText: CrawledSitePage["domText"] = [];
       let interactives: CrawledSitePage["interactives"] = [];
@@ -606,11 +651,20 @@ export async function crawlShopSite(
         if (!response?.ok()) failureReason = response ? `HTTP_${response.status()}` : "NO_RESPONSE";
         await waitForDomQuiet(page);
         await waitForShopContent(page);
-        const restored = await restoreStatePath(page, item.statePath, item.controlIndexes);
+        const restored = await restoreStatePath(page, item.statePath, item.controlIndexes, credentials);
         if (!restored.restored) throw new Error(`SPA_STATE_REPLAY_FAILED: ${restored.failedState}`);
         crawledUrl = page.url();
         const lazyContent = await loadLazyContent(page);
         lazyContentComplete = lazyContent.complete;
+        if (item.statePath.length > rootStatePath.length) {
+          const signature = await visibleStateSignature(page);
+          const firstKey = stateSignatures.get(signature);
+          if (firstKey) {
+            duplicateStates.push({ url: item.url, statePath: item.statePath, duplicateOf: firstKey });
+            continue;
+          }
+          stateSignatures.set(signature, nodeKey(item.url, item.statePath, item.controlIndexes));
+        }
         title = await page.title().catch(() => "");
         const extracted = await page.evaluate(`(() => ({
           text: document.body?.innerText ?? "",
@@ -652,15 +706,18 @@ export async function crawlShopSite(
             const safeInForm = !element.closest('form') || element.tagName === 'A' || ['tab', 'menuitem', 'link'].includes(element.getAttribute('role') || '') || (element.tagName === 'BUTTON' && element.getAttribute('type') === 'button');
             const expandable = element.hasAttribute('aria-expanded') || element.hasAttribute('aria-controls');
             const paginationRegion = !!element.closest('[class*="pagination" i], [aria-label*="pagination" i], [aria-label*="페이지"], [data-pagination]');
-            if (new RegExp(${JSON.stringify(paginationControlLabel.source)}, 'i').test(label) && !paginationRegion && !navigationItem) return [];
+            if (new RegExp(${JSON.stringify(paginationControlLabel.source)}, 'i').test(label) && !paginationRegion && (!navigationItem || /^\d+$/.test(label))) return [];
             const active = element.getAttribute('aria-selected') === 'true' || element.getAttribute('aria-pressed') === 'true' || element.getAttribute('aria-current') === 'page' || element.getAttribute('data-state') === 'active' || element.getAttribute('data-active') === 'true' || /(?:^|\s)(?:active|selected|current)(?:\s|$)/i.test(typeof element.className === 'string' ? element.className : '');
             const recognized = new RegExp(${JSON.stringify(`${safeNavigationLabel.source}|${safeNavigationRegion.source}`)}, 'i').test(label) || /\\//.test(label) || /^(?:전체\\s*보기|all\\s*(?:products|categories)?|view\\s*all|아이콘\\s*메뉴\\s*열기)$/i.test(label);
             const unsafe = new RegExp(${JSON.stringify(unsafeNavigationLabel.source)}, 'i').test(label) &&
               !new RegExp(${JSON.stringify(readOnlyNavigationPattern.source)}, 'i').test(label);
             if (!visible || !safeInForm || element.disabled || !label || label.length > 40 || (!navigationItem && !expandable && !recognized) || unsafe) return [];
-            return [{ label, index, navigationItem, active }];
+            const rect = element.getBoundingClientRect();
+            const hit = rect.width && rect.height ? document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2) : null;
+            const obscured = !!hit && !element.contains(hit) && !hit.contains(element);
+            return [{ label, index, navigationItem, active, obscured }];
           })
-        }))()`) as { text?: string; links?: { href: string; text: string }[]; getSearchForms?: { action: string; name: string; value: string }[]; sitemapLocations?: string[]; robotsSitemaps?: string[]; controls?: { label: string; index: number; navigationItem: boolean; active: boolean }[]; unclassifiedControls?: string[]; anchorCount?: number; interactiveCount?: number };
+        }))()`) as { text?: string; links?: { href: string; text: string }[]; getSearchForms?: { action: string; name: string; value: string }[]; sitemapLocations?: string[]; robotsSitemaps?: string[]; controls?: { label: string; index: number; navigationItem: boolean; active: boolean; obscured: boolean }[]; unclassifiedControls?: string[]; anchorCount?: number; interactiveCount?: number };
         const rawText = String(extracted.text ?? "");
         const inventory = await page.evaluate(`(() => {
           const body = document.body;
@@ -725,7 +782,12 @@ export async function crawlShopSite(
         links = (extracted.links ?? []) as typeof links;
         unsafeControls = [...new Set(inventory.interactives.map(({ label }) => label.replace(/\s+/g, " ").trim().slice(0, 180)).filter((label) => label && unsafeNavigationLabel.test(label) && !readOnlyNavigationPattern.test(label)))];
         for (const form of inventory.forms) if (form.method === "GET") links.push({ href: form.action, text: "GET 양식 경로" });
+        if (!item.statePath.some((state) => state.startsWith(productCardActionPrefix))) {
+          productCards = await productCardCandidates(page);
+          for (const card of productCards) productCardTitles.add(card.title);
+        }
         for (const label of [...new Set(extracted.unclassifiedControls ?? [])]) {
+          if (isProductCardControl(label)) continue;
           if ((safeNavigationLabel.test(label) || safeNavigationRegion.test(label) || readOnlyNavigationPattern.test(label)) && (!unsafeNavigationLabel.test(label) || readOnlyNavigationPattern.test(label)) && !(extracted.controls ?? []).some((item) => item.label === label)) {
             unexploredControls.push({ url: item.url, label, reason: "화면 조작 후보는 있지만 안전한 화면 이동인지 분류하지 못했습니다.", statePath: item.statePath });
           }
@@ -733,11 +795,17 @@ export async function crawlShopSite(
         if (!lazyContentComplete) unexploredControls.push({ url: item.url, label: "페이지 아래쪽 추가 콘텐츠", reason: "스크롤 조사 한도 안에 하단과 지연 로딩 콘텐츠가 안정되지 않아 미확인 상태입니다." });
         for (const label of unsafeControls) skippedControls.push({ url: item.url, label, reason: "계정·구매 상태를 바꿀 수 있어 실행하지 않았습니다. 버튼과 주변 문구는 DOM 증거로 보관했습니다." });
         for (const form of formsFound.filter(({ method }) => method !== "GET")) skippedControls.push({ url: item.url, label: `${form.method} form`, reason: "상태를 바꿀 수 있는 양식 제출은 실행하지 않았습니다." });
-        controlCandidates = extracted.controls ?? [];
-      controls = [...new Set(controlCandidates.map(({ label }) => label))];
-        if (!item.statePath.some((state) => state.startsWith(productCardActionPrefix))) {
-          productCards = await productCardCandidates(page);
+        controlCandidates = (extracted.controls ?? []).filter(({ label }) => !isProductCardControl(label));
+        // A control covered by an open modal or overlay cannot be pressed by a
+        // customer in this state either; its own screen is reached from the
+        // state where it is uncovered.
+        for (const { label } of controlCandidates.filter(({ obscured }) => obscured)) {
+          if (!skippedControls.some((entry) => entry.url === item.url && entry.label === label && entry.reason.startsWith("다른 화면 요소"))) {
+            skippedControls.push({ url: item.url, label, reason: "다른 화면 요소(모달·오버레이)에 가려 이 상태에서는 누를 수 없어 조사하지 않았습니다." });
+          }
         }
+        controlCandidates = controlCandidates.filter(({ obscured }) => !obscured);
+      controls = [...new Set(controlCandidates.map(({ label }) => label))];
         for (const form of extracted.getSearchForms ?? []) {
           const searchUrl = new URL(form.action, item.url);
           if (!searchUrl.searchParams.has(form.name) || !searchUrl.searchParams.get(form.name)?.trim()) {
@@ -800,7 +868,7 @@ export async function crawlShopSite(
           const normalized = normalizeUrl(href, normalizedFinal, target.hostname);
           return normalized.url ? [normalized.url] : [];
         }),
-        capturedAt: new Date().toISOString(),
+        capturedAt: new Date().toISOString(), durationMs: Date.now() - visitStartedAt,
         ...(failureReason ? { failureReason } : {}),
       });
       for (const link of links) enqueue(link.href, normalizedFinal, normalizedFinal, item.depth + 1);
@@ -846,7 +914,7 @@ export async function crawlShopSite(
         }
         const exploredKey = `${nodeKey(normalizedFinal, item.statePath, item.controlIndexes)}::control:${controlIndex}:${label}`;
         if (exploredControlLabels.has(exploredKey)) return;
-        if (item.statePath.length >= 8) {
+        if (item.statePath.length >= 8 + rootStatePath.length) {
           noteUnexplored(label, "중첩 화면 상태 조사는 안전 깊이 한도에 도달했습니다.");
           return;
         }
@@ -863,7 +931,7 @@ export async function crawlShopSite(
           }
           await waitForDomQuiet(probe);
           await waitForShopContent(probe);
-          const restored = await restoreStatePath(probe, item.statePath, item.controlIndexes);
+          const restored = await restoreStatePath(probe, item.statePath, item.controlIndexes, credentials);
           if (!restored.restored) {
             noteUnexplored(label, "화면 상태를 재현하지 못했습니다.");
             return;
@@ -954,6 +1022,7 @@ export async function crawlShopSite(
     failedUrlCount,
     maxDepth,
     durationMs: Date.now() - startedAt,
+    duplicateStates, loginReplayed: rootStatePath.length > 0,
     ...(stopReason ? { stopReason } : {}),
   };
 }

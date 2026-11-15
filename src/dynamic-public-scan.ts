@@ -14,6 +14,7 @@ import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectR
 import { classifyReviewCandidates } from "./review-classifier";
 import { structuredProductLinks } from "./structured-product-links";
 import type { TestCredentials } from "./credential-vault";
+import { clickAndWaitForChange, openLoginForm, submitLoginForm } from "./test-login";
 import { classifyDynamicFailure } from "./scan-failure";
 import { summarizeAiUsage } from "./ai-cost";
 import { buildRuleCoverage } from "./rule-coverage";
@@ -41,15 +42,6 @@ export function classifyCrawledSurfaceKinds(routeAndText: string): DiagnosticSur
   if (/(?:cancel|unsubscribe|withdraw|refund|해지|탈퇴|환불|취소|반품)/i.test(routeAndText)) kinds.push("CANCELLATION");
   if (/(?:shipping|delivery|exchange|return|policy|terms|배송|교환|반품|정책|약관)/i.test(routeAndText)) kinds.push("POLICY");
   return kinds;
-}
-
-async function clickAndWaitForChange(page: import("playwright").Page, action: import("playwright").Locator, timeoutMs = 1_200) {
-  const beforeUrl = page.url();
-  const beforeText = await page.locator("body").innerText().catch(() => "");
-  await action.click({ timeout: 3_000 });
-  const changed = await page.waitForFunction(({ url, text }) => location.href !== url || (document.body?.innerText ?? "") !== text,
-    { url: beforeUrl, text: beforeText }, { timeout: timeoutMs }).then(() => true).catch(() => false);
-  if (changed && page.url() !== beforeUrl) await page.waitForLoadState("domcontentloaded", { timeout: 1_500 }).catch(() => {});
 }
 
 export function isAllowedDynamicRequest(targetUrl: string, requestUrl: string) {
@@ -127,45 +119,14 @@ export async function scanDynamicPublicShop(
     await waitForDomQuiet(page);
     let authenticationObservation: SurfaceObservation | null = null;
     let preAuthenticationPage: CrawledSitePage | null = null;
-    if (credentials) {
-      // Many storefronts keep the login form inside a modal that is opened
-      // only after the header action is clicked. Open one unambiguous login
-      // control before looking for the credential fields; do not click
-      // marketing/consent controls or guess among multiple candidates.
-      if (!await page.locator('input[type="password"]:visible').count()) {
-        const loginControl = page.getByRole("button", { name: /로그인|sign\s*in|log\s*in/i })
-          .or(page.getByRole("link", { name: /로그인|sign\s*in|log\s*in/i }));
-        if (await loginControl.count() === 1) {
-          await clickAndWaitForChange(page, loginControl);
-        }
-      }
-    }
-    if (credentials && await page.locator('input[type="password"]:visible').count()) {
+    if (credentials && await openLoginForm(page)) {
       // Login overlays can contain preselected consent and renewal controls.
       // Preserve their actual checked states before submitting credentials.
       preAuthenticationPage = await captureCurrentPageAsCrawlEvidence(page, {
         status: response.status(), secrets: [credentials.username, credentials.password],
         statePath: ["로그인 화면 (인증 전)"],
       });
-      const password = page.locator('input[type="password"]:visible').first();
-      const userField = page.locator('input[type="email"], input[name*="id" i], input[name*="user" i], input[name*="login" i], input[autocomplete="username"]').filter({ visible: true }).first();
-      if (!await userField.count()) throw new Error("로그인 아이디 입력란을 찾지 못했습니다.");
-      await userField.fill(credentials.username);
-      await password.fill(credentials.password);
-      // The header login trigger often remains in the DOM while the modal is
-      // open. Restrict submission to visible controls so we do not click the
-      // trigger a second time or reject an otherwise unambiguous form.
-      let submit = page.locator('form:visible button[type="submit"], form:visible input[type="submit"], button[type="submit"]:visible, input[type="submit"]:visible');
-      if (await submit.count() === 0) {
-        submit = page.locator('button:visible').filter({ hasText: /로그인|sign\s*in|log\s*in/i });
-      }
-      if (await submit.count() !== 1) throw new Error("로그인 버튼을 하나로 확정하지 못했습니다.");
-      await Promise.all([
-        page.waitForLoadState("domcontentloaded", { timeout: 10_000 }).catch(() => {}),
-        submit.click(),
-      ]);
-      await password.waitFor({ state: "hidden", timeout: 2_000 }).catch(() => {});
-      if (await page.locator('input[type="password"]:visible').count()) throw new Error("로그인에 실패했거나 추가 인증이 필요합니다.");
+      await submitLoginForm(page, credentials);
       authenticationObservation = {
         evidenceId: "surface:auth:test-account", kind: "AUTH", url: page.url(), status: response.status(),
         title: "테스트 계정 로그인", text: "승인된 테스트 계정으로 로그인 화면을 제출하고 인증 후 화면에 도달했습니다.",
@@ -367,11 +328,16 @@ export async function scanDynamicPublicShop(
       const root = await activeSurface.count() ? activeSurface : page.locator("body");
       const snapshot = await capture(page, stage, directory, root, page.url(), true);
       snapshots.push(snapshot);
-      // The checked state at every stage is preserved by capture(). Reversible
-      // price-impact probing is limited to the product surface: toggling
-      // checkout consent/subscription controls can trigger validation, replace
-      // the modal, and add seconds without improving preselection evidence.
-      if (stage === "product") interactions.push(...await observePaidOptionChanges(page, root, stage));
+      // The checked state at every stage is preserved by capture() before any
+      // reversible probing below changes it.
+      if (stage === "product" || stage === "checkout") {
+        // Checkout is probed too: a decline confirmation shown only after
+        // unchecking a preselected paid option is otherwise never observed.
+        const toggles = await observePaidOptionChanges(page, root, stage);
+        interactions.push(...toggles);
+        const revealed = toggles.flatMap(({ revealedText }) => revealedText ?? []);
+        if (revealed.length) snapshot.textLines = [...(snapshot.textLines ?? []), ...revealed];
+      }
       await onStage(snapshot);
     }, purchasePath, onSurfacePhase);
     const journey = await Promise.race([
@@ -402,7 +368,7 @@ export async function scanDynamicPublicShop(
         complete: false, pages: [], skippedLinks: [], unexploredControls: [], nonNavigatingControls: [], skippedControls: [], pendingUrls: [target.href],
         discoveredUrlCount: 1, visitedUrlCount: 0, discoveredStateCount: 1, visitedStateCount: 0,
         uniqueDiscoveredUrlCount: 1, uniqueVisitedUrlCount: 0, productCardCount: 0, failedUrlCount: 0, maxDepth: 0,
-        durationMs: 0, stopReason: reason,
+        durationMs: 0, duplicateStates: [], loginReplayed: false, stopReason: reason,
       };
     }
     if (preAuthenticationPage) {
@@ -461,7 +427,7 @@ export async function scanDynamicPublicShop(
     }
     const reviewCandidates = [...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)];
     const findings = [...detect(snapshots, firstPriceExposure?.feeMentions), ...detectForcedAction(journey.blocker ?? null, snapshots)];
-    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, siteCrawlComplete: siteCrawl.complete, reviewCandidates });
+    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, reviewCandidates });
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: dynamicScanStatus(journey.reached, journey.blocker ?? null, siteCrawl.complete),

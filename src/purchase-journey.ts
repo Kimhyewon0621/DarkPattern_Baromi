@@ -10,7 +10,7 @@ const openCart = /^(?:(?:내|쇼핑|my|shopping)\s*)?(?:장바구니|카트|cart
 const checkout = /(?:주문서|주문|구매|결제|checkout|proceed\s+to\s+checkout)/i;
 // Keep the candidate count visible to the blocker logic: a storefront may have
 // several product-card purchase buttons, so we must not guess which item to buy.
-const directBuy = /(?:바로\s*구매|즉시\s*구매|특가\s*구매|구매하기|주문하기|buy\s+now|order\s+now)/i;
+const directBuy = /(?:바로\s*구매|즉시\s*구매|특가\s*구매|구매하기|(?:주문|신청|예약|구독)(?!\s*(?:확정|완료))[^\n]{0,8}하기|buy\s+now|book\s+now|order\s+now)/i;
 const priceKey = /(?:^|_)(?:total|subtotal|price|amount|shipping|delivery|fee|discount)(?:_|$)/i;
 
 function extractPrices(value: unknown, path = "$", depth = 0): { path: string; won: number }[] {
@@ -170,7 +170,10 @@ async function isCheckoutLike(page: Page) {
   const text = await page.locator("body").innerText().catch(() => "");
   const hasCheckoutCopy = /(?:주문\s*(?:서|결제서|정보)|결제\s*(?:정보|승인)|최종\s*결제\s*금액|배송\s*정보|checkout|payment|place\s+order)/i.test(text);
   const hasCustomerForm = await page.locator('input:not([type="hidden"]), select, textarea').count() > 0;
-  return hasCheckoutCopy && hasCustomerForm;
+  // Some order sheets have no editable fields, only the final payment action.
+  const hasFinalPaymentAction = await page.locator('button:visible, input[type="submit"]:visible, [role="button"]:visible')
+    .filter({ hasText: /결제\s*(?:승인|하기)|\d[\d,]*\s*원\s*결제|주문\s*(?:확정|완료)|place\s+order|pay\s+now/i }).count() > 0;
+  return hasCheckoutCopy && (hasCustomerForm || hasFinalPaymentAction);
 }
 
 async function isCartLike(page: Page) {
@@ -340,8 +343,11 @@ async function missingActionBlocker(page: Page, count: number, action: JourneyBl
   const barrierText = await page.locator('[role="dialog"]:visible, [aria-modal="true"]:visible, div.fixed.inset-0:visible')
     .allInnerTexts().then((items) => items.join(" ")).catch(() => "");
   const loginCopy = /(?:로그인|회원가입|sign\s*in|log\s*in|account\s+required|please\s+sign)/i;
-  const login = passwordVisible || loginCopy.test(barrierText)
-    || (!count && loginCopy.test(bodyText) && /(?:구매|주문|계속|purchase|checkout|continue)/i.test(bodyText));
+  // A visible logout control means the session is already authenticated.
+  const authenticated = await page.getByRole("button", { name: /로그아웃|log\s*out|sign\s*out/i })
+    .or(page.getByRole("link", { name: /로그아웃|log\s*out|sign\s*out/i })).filter({ visible: true }).count() > 0;
+  const login = passwordVisible || (!authenticated && loginCopy.test(barrierText))
+    || (!authenticated && !count && loginCopy.test(bodyText) && /(?:구매|주문|계속|purchase|checkout|continue)/i.test(bodyText));
   return { stage: action === "OPEN_CHECKOUT" ? "cart" : "product", code: login ? "LOGIN_REQUIRED" : count ? "ACTION_AMBIGUOUS" : "ACTION_NOT_FOUND", action, candidateCount: count };
 }
 
