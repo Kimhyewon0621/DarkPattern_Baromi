@@ -1358,9 +1358,11 @@ test("월 납부액과 의무 기간만 먼저 보여준 뒤 총액을 주문서
     priceLines: ["월 9,900원"], textLines: ["12개월 약정"], options: [], fees: [] };
   const checkout = { evidenceId: "checkout:installment", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png",
     priceLines: ["총 결제 금액 118,800원"], textLines: [], options: [], fees: [] };
-  expect(assessPriceComparison([product, checkout])?.status).toBe("SUSPECTED");
-  expect(assessPriceComparison([product, { ...checkout, options: [{ label: "추가 보증", won: 1000, selected: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }] }])?.status).toBe("REVIEW_NEEDED");
-  expect(detect([product, checkout])).toEqual([expect.objectContaining({ type: "PRICE_COMPARISON_OBSTRUCTION", evidenceIds: ["product:installment", "checkout:installment"] })]);
+  const cart = { ...checkout, evidenceId: "cart:single", stage: "cart" as const, cartItemCount: 1 };
+  expect(assessPriceComparison([product, checkout])?.status).toBe("REVIEW_NEEDED");
+  expect(assessPriceComparison([product, cart, checkout])?.status).toBe("SUSPECTED");
+  expect(assessPriceComparison([product, cart, { ...checkout, options: [{ label: "추가 보증", won: 1000, selected: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }] }])?.status).toBe("REVIEW_NEEDED");
+  expect(detect([product, cart, checkout])).toEqual([expect.objectContaining({ type: "PRICE_COMPARISON_OBSTRUCTION", evidenceIds: ["product:installment", "checkout:installment"] })]);
   expect(assessPriceComparison([{ ...product, textLines: [], priceLines: ["총 결제 금액 118,800원"] },
     { ...checkout, priceLines: ["총 결제 금액 118,800원"] },
     { ...checkout, evidenceId: "cart:one", stage: "cart" as const, cartItemCount: 1 }])?.status).toBe("NOT_OBSERVED");
@@ -1377,6 +1379,15 @@ test("16개 유형별 상태는 증거가 없는 항목을 미발견이 아닌 �
   expect(coverage.DRIP_PRICING.status).toBe("NOT_TESTED");
   expect(coverage.MISDIRECTED_HIERARCHY.status).toBe("NOT_TESTED");
   expect(coverage.CANCELLATION_OBSTRUCTION.status).toBe("NOT_TESTED");
+});
+
+test("상품 화면 없이 주문서만 수집하면 주문서를 상품으로 오인해 순차공개 가격을 판정하지 않는다", () => {
+  const checkout = {
+    evidenceId: "checkout:only", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png",
+    priceLines: ["필수 배송비 2,000원"], textLines: [], options: [],
+    fees: [{ id: "shipping", label: "필수 배송비", won: 2000, required: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }],
+  };
+  expect(detect([checkout]).some(({ type }) => type === "DRIP_PRICING")).toBe(false);
 });
 
 test("보고서 요약은 발견 항목 수가 아니라 16개 유형별 최종 상태를 센다", async () => {

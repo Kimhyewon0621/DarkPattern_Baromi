@@ -89,15 +89,17 @@ export function evidenceIds(snapshots: Snapshot[]) {
   return snapshots.map((snapshot) => snapshot.evidenceId ?? `evidence:${snapshot.stage}`);
 }
 
-export function detect([product, ...later]: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = [], interactions: InteractionEvidence[] = [], firstPriceExposure?: FirstPriceExposure): Finding[] {
-  if (!product) return [];
+export function detect(snapshots: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = [], interactions: InteractionEvidence[] = [], firstPriceExposure?: FirstPriceExposure): Finding[] {
+  if (!snapshots.length) return [];
+  const product = snapshots.find((snapshot) => snapshot.stage === "product");
+  const later = product ? snapshots.filter((snapshot) => snapshot !== product && snapshot.stage !== "product") : [];
   const findings = [
-    ...[product, ...later].flatMap((snapshot) => detectPreselection(snapshot, interactions)),
-    ...detectDripPricing(product, later, priorDisclosures),
-    ...later.flatMap((snapshot) => detectSneakyCartAdd(snapshot)),
-    ...detectBaitSelling(firstPriceExposure, [product, ...later]),
-    ...[product, ...later].filter((snapshot) => snapshot.stage === "checkout").flatMap((snapshot) => detectMisdirectedHierarchy(snapshot)),
-    ...detectPriceComparison([product, ...later]),
+    ...snapshots.flatMap((snapshot) => detectPreselection(snapshot, interactions)),
+    ...(product ? detectDripPricing(product, later, priorDisclosures) : []),
+    ...snapshots.flatMap((snapshot) => detectSneakyCartAdd(snapshot)),
+    ...detectBaitSelling(firstPriceExposure, snapshots),
+    ...snapshots.filter((snapshot) => snapshot.stage === "checkout").flatMap((snapshot) => detectMisdirectedHierarchy(snapshot)),
+    ...detectPriceComparison(snapshots),
   ];
   // Show each rule once while retaining evidence from every observed stage.
   const byType = new Map<Finding["type"], Finding>();

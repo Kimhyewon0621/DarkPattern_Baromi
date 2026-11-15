@@ -35,7 +35,7 @@ export function assessPriceComparison(snapshots: Snapshot[]): PriceComparisonAss
   if (monthlyWon && checkoutTotal && productTotal === null) {
     const sameConditions = product.options.length === 0 && checkout.options.length === 0
       && product.fees.length === 0 && checkout.fees.length === 0
-      && (snapshots.find((item) => item.stage === "cart")?.cartItemCount ?? 1) === 1;
+      && snapshots.find((item) => item.stage === "cart")?.cartItemCount === 1;
     if (sameConditions && months && months >= 2 && monthlyWon * months === checkoutTotal) return {
       status: "SUSPECTED",
       reason: `상품 화면에는 월 ${monthlyWon.toLocaleString("ko-KR")}원과 ${months}개월 의무 기간만 표시되고, 비교에 필요한 총 ${checkoutTotal.toLocaleString("ko-KR")}원은 주문서에서 처음 확인됩니다.`,
