@@ -1,4 +1,5 @@
 const endpoint = () => process.env.BAROMI_SPRING_API_URL?.replace(/\/$/, "");
+const pendingStatusUpdates = new Map<string, Promise<void>>();
 export const springAuthoritative = () => process.env.BAROMI_SPRING_AUTHORITATIVE === "true" && Boolean(endpoint());
 
 export async function springReadiness() {
@@ -19,6 +20,25 @@ const springTimeoutMs = () => {
   const configured = Number(process.env.BAROMI_SPRING_TIMEOUT_MS ?? 800);
   return Number.isFinite(configured) ? Math.min(Math.max(configured, 200), 5_000) : 800;
 };
+
+async function springGet(path: string, owner: string) {
+  const base = endpoint();
+  if (!base || !owner || !springAuthoritative()) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
+  try {
+    const response = await fetch(`${base}${path}`, {
+      headers: { "x-baromi-owner": owner },
+      signal: controller.signal,
+    });
+    return response;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw new Error("Spring 상태 저장소 응답 시간 초과");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 export async function mirrorSpringShop(shopId: string, url: string, owner: string) {
   const base = endpoint();
@@ -54,25 +74,31 @@ export async function mirrorSpringScan(scan: { id: string; shopId: string; targe
 }
 
 /** Best-effort bridge during the Spring migration. The SQLite path remains authoritative until cutover. */
-export async function notifySpringScanStatus(scanId: string, status: "queued" | "running" | "partial" | "succeeded" | "failed" | "cancelled", stage?: string, reportJson?: string) {
+export async function notifySpringScanStatus(scanId: string, status: "queued" | "running" | "partial" | "succeeded" | "failed" | "cancelled", stage?: string, reportJson?: string, phaseResults?: Record<string, unknown>) {
   const base = endpoint();
   const token = process.env.BAROMI_WORKER_TOKEN;
   if (!base || !token) return;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
-  try {
-    const response = await fetch(`${base}/api/v1/scans/${encodeURIComponent(scanId)}/status`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json", "x-baromi-worker": token },
-      body: JSON.stringify({ status, stage, ...(reportJson ? { reportJson } : {}) }),
-      signal: controller.signal,
-    });
-    if (!response.ok) console.warn(`Spring scan status callback failed: ${response.status}`);
-  } catch (error) {
-    console.warn("Spring scan status callback unavailable", error instanceof Error ? error.message : error);
-  } finally {
-    clearTimeout(timeout);
-  }
+  const previous = pendingStatusUpdates.get(scanId) ?? Promise.resolve();
+  const update = previous.catch(() => undefined).then(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
+    try {
+      const response = await fetch(`${base}/api/v1/scans/${encodeURIComponent(scanId)}/status`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-baromi-worker": token },
+        body: JSON.stringify({ status, stage, ...(reportJson ? { reportJson } : {}), ...(phaseResults ? { phaseResults } : {}) }),
+        signal: controller.signal,
+      });
+      if (!response.ok) console.warn(`Spring scan status callback failed: ${response.status}`);
+    } catch (error) {
+      console.warn("Spring scan status callback unavailable", error instanceof Error ? error.message : error);
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  pendingStatusUpdates.set(scanId, update);
+  await update;
+  if (pendingStatusUpdates.get(scanId) === update) pendingStatusUpdates.delete(scanId);
 }
 
 /** Read-through access used only after Spring/PostgreSQL has passed cutover checks. */
@@ -94,4 +120,28 @@ export async function readSpringScan(scanId: string, owner: string, report = fal
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export async function readSpringShop(shopId: string, owner: string) {
+  const response = await springGet(`/api/v1/shops/${encodeURIComponent(shopId)}`, owner);
+  if (!response) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Spring shop read failed: ${response.status}`);
+  return await response.json() as Record<string, unknown>;
+}
+
+export async function listSpringShops(owner: string, limit: number) {
+  const response = await springGet(`/api/v1/shops?limit=${limit}`, owner);
+  if (!response) return null;
+  if (!response.ok) throw new Error(`Spring shop list failed: ${response.status}`);
+  return await response.json() as Record<string, unknown>;
+}
+
+export async function listSpringShopScans(shopId: string, owner: string, limit = 50) {
+  const response = await springGet(`/api/v1/scans/shop/${encodeURIComponent(shopId)}?limit=${limit}`, owner);
+  if (!response) return null;
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Spring scan history failed: ${response.status}`);
+  const body = await response.json() as { scans?: unknown[] };
+  return body.scans ?? [];
 }

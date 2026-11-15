@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 const file = process.argv[2] ?? "datasets/labels.example.jsonl";
 const allowedSplits = new Set(["development", "training", "validation"]);
 const allowedLabels = new Set(["RISK", "REVIEW", "NOT_OBSERVED", "NOT_TESTED"]);
+const allowedAdjudication = new Set(["PENDING", "AGREED"]);
 
 async function main() {
 const rows = (await readFile(file, "utf8")).split(/\r?\n/).map((line, index) => ({ line, index: index + 1 })).filter(({ line }) => line.trim());
@@ -16,7 +17,11 @@ for (const { line, index } of rows) {
   if (!allowedSplits.has(row.split) || !Array.isArray(row.evidenceIds) || !Array.isArray(row.labels) || !row.evidenceIds.length) {
     throw new Error(`${file}:${index}: split/evidenceIds/labels 형식이 올바르지 않습니다.`);
   }
-  for (const label of row.labels) if (!allowedLabels.has(label.status)) throw new Error(`${file}:${index}: 알 수 없는 라벨 상태입니다.`);
+  for (const label of row.labels) {
+    if (!label || typeof label.type !== "string" || !allowedLabels.has(label.status) || !allowedAdjudication.has(label.adjudication)) {
+      throw new Error(`${file}:${index}: 라벨 type/status/adjudication 형식이 올바르지 않습니다.`);
+    }
+  }
   const prior = seenGroups.get(row.shopGroupId);
   if (prior && prior !== row.split) throw new Error(`${file}:${index}: 같은 shopGroupId가 여러 split에 섞였습니다.`);
   seenGroups.set(row.shopGroupId, row.split);
