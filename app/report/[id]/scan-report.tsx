@@ -8,6 +8,7 @@ import { legalRules } from "../../../src/legal-rules";
 import type { compareScans } from "../../../src/scan-comparison";
 import { post, scanRequest } from "../../scan-request";
 import { diagnosticSurfaceKinds, diagnosticSurfaceLabels, type DiagnosticSurfaceKind, type DiagnosticSurfaceStatus } from "../../../src/diagnostic-surfaces";
+import type { RuleCoverage } from "../../../src/rule-coverage";
 
 const failureLabels: Record<string, string> = {
   FETCH_FAILED: "첫 화면 접근 실패",
@@ -20,7 +21,7 @@ const failureLabels: Record<string, string> = {
 type Report = {
   shopId: string;
   scenario: string;
-  scanStatus: "COMPLETED" | "PARTIAL";
+  scanStatus: "COMPLETED" | "PARTIAL" | "FAILED";
   executionMode: "DEMO" | "STATIC" | "DYNAMIC";
   viewport: "DESKTOP" | "MOBILE";
   purchasePath: "CART" | "DIRECT";
@@ -28,9 +29,11 @@ type Report = {
   collectionFailureCode?: string;
   durationMs: number | null;
   stageTimingsMs?: Record<string, number>;
+  phaseResults?: import("../../../src/scan-phases").ScanPhaseResults;
   targetUrl: string;
   coverage: Record<Stage, "COVERED" | "BLOCKED" | "PENDING" | "SKIPPED">;
-  summary: { suspected: number; reviewNeeded: number; notTested: number };
+  summary: { suspected: number; reviewNeeded: number; notObserved: number; notTested: number };
+  ruleCoverage: RuleCoverage;
   surfaceCoverage: Record<DiagnosticSurfaceKind, DiagnosticSurfaceStatus>;
   comparison?: (ReturnType<typeof compareScans> & { baselineScanId: string }) | null;
   explorationBlocker?: {
@@ -40,6 +43,14 @@ type Report = {
   findings: { id: number; type: keyof typeof legalRules; stage: Stage; reason: string }[];
   reviewCandidates?: { id: string; kind: string; stage: Stage | "surface"; text: string; reason: string; evidenceIds: string[] }[];
   surfaceObservations?: { evidenceId: string; kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "COUPON" | "RECOMMENDATION" | "POLICY" | "CATALOG"; url: string; status: number | null; title: string; text: string; outcome: string }[];
+  siteCrawl?: {
+    complete: boolean; pages: { evidenceId: string; url: string; discoveredFrom: string | null; depth: number; statePath: string[]; status: number | null; outcome: string; title: string; linksFound: number; controlsFound: string[]; failureReason?: string; elementCount: number; hiddenTextElementCount: number; interactiveCount: number; formsFound: { method: string; action: string }[]; interactives: { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string }[]; domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string }[] }[];
+    skippedLinks: { url: string; discoveredFrom: string; reason: string }[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; pendingUrls: string[];
+    skippedControls: { url: string; label: string; reason: string }[];
+    discoveredUrlCount: number; visitedUrlCount: number; discoveredStateCount: number; visitedStateCount: number;
+    uniqueDiscoveredUrlCount: number; uniqueVisitedUrlCount: number; productCardCount: number;
+    failedUrlCount: number; maxDepth: number; durationMs: number; stopReason?: string;
+  };
   reviewClassifications?: { candidateId: string; label: string; confidence: number; method: string }[];
   aiUsage?: { calls: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number };
   aiEligible: boolean;
@@ -79,21 +90,35 @@ export function ScanReport({ id }: { id: string }) {
   if (!report) return error ? <p role="alert">{error}</p> : <p role="status">결과 불러오는 중…</p>;
   return (
     <>
-      <p className="eyebrow">{report.scanStatus === "COMPLETED" ? "진단 완료" : "검증 범위 제한"}</p>
+      <p className="eyebrow">{report.scanStatus === "COMPLETED" ? "진단 완료" : report.scanStatus === "FAILED" ? "진단 실패 · 수집된 결과와 미검사 사유" : "검증 범위 제한"}</p>
       <p className="target-url">{report.targetUrl}</p>
+      {report.collectionFailure && <p role="alert">진단이 종료된 이유 · {failureLabels[report.collectionFailureCode ?? ""] ?? report.collectionFailure}</p>}
       <p><Link href={`/shop/${report.shopId}`}>이 상점의 진단 이력 보기</Link></p>
       <p><a href={`/api/v1/scans/${encodeURIComponent(id)}/report?download=1`} download={`baromi-${id}.json`}>보고서 JSON 다운로드</a></p>
       <p>화면 환경 · {report.viewport === "MOBILE" ? "모바일 390×844" : "PC 1440×1000"} · {report.purchasePath === "DIRECT" ? "바로구매" : "장바구니 경유"}</p>
       {report.durationMs !== null && <p>진단 소요 시간 · {(report.durationMs / 1000).toFixed(1)}초</p>}
       {report.stageTimingsMs && <p>단계별 도달 시간 · {Object.entries(report.stageTimingsMs).map(([stage, ms]) => `${stageLabels[stage as Stage] ?? stage} ${(ms / 1000).toFixed(1)}초`).join(" · ")}</p>}
+      {report.phaseResults && <section aria-label="단계별 진단 기록"><h2>단계별 진단 기록</h2><ul>{Object.entries(report.phaseResults).map(([phase, result]) => <li key={phase}>{phase === "site-crawl" ? "발견된 내부 경로와 화면 상태" : stageLabels[phase as Stage] ?? diagnosticSurfaceLabels[phase.replace("surface:", "") as DiagnosticSurfaceKind] ?? phase} · {result?.status ?? "상태 미기록"}{result?.durationMs !== undefined ? ` · ${(result.durationMs / 1000).toFixed(1)}초` : ""}{result?.reason ? ` · ${result.reason}` : ""}{result?.evidenceIds.length ? ` · 증거 ${result.evidenceIds.length}개` : ""}</li>)}</ul></section>}
       <dl className="summary">
         <div><dt>위험 의심</dt><dd>{report.summary.suspected}</dd></div>
         <div><dt>확인 필요</dt><dd>{report.summary.reviewNeeded}</dd></div>
+        <div><dt>검사 범위에서 미발견</dt><dd>{report.summary.notObserved}</dd></div>
         <div><dt>미검사</dt><dd>{report.summary.notTested}</dd></div>
       </dl>
       <h2>검사 범위</h2>
       {report.executionMode === "STATIC" && <p>공개 상품 화면(서버 HTML 또는 안전한 같은 출처 렌더링)을 검사했습니다. 장바구니·주문서의 추가 비용과 구매 행동 후 표시되는 항목은 미검사입니다.</p>}
       {report.executionMode === "DYNAMIC" && <p>확인된 쇼핑몰에서 별도 세션으로 동적 구매 흐름을 검사했습니다. 실제 주문 확정과 결제는 실행하지 않았습니다.</p>}
+      {report.executionMode === "DYNAMIC" && report.siteCrawl && <section aria-label="발견된 내부 경로와 화면 상태 크롤링 결과">
+        <h2>발견된 내부 경로와 화면 상태</h2>
+        <p>{report.siteCrawl.complete ? "발견된 안전한 내부 URL과 화면 상태를 모두 순회했습니다. 이 결과만으로 링크나 사이트맵에서 발견되지 않은 페이지까지 확인됐다고 보장하지는 않습니다." : "크롤링이 끝까지 완료되지 않아 전체 쇼핑몰 진단으로 볼 수 없습니다."} 고유 URL {report.siteCrawl.uniqueVisitedUrlCount} / 발견 {report.siteCrawl.uniqueDiscoveredUrlCount} · 화면 상태 {report.siteCrawl.visitedStateCount} / 발견 {report.siteCrawl.discoveredStateCount} · 상품 카드 {report.siteCrawl.productCardCount} · 접근 실패 {report.siteCrawl.failedUrlCount} · 미확인 화면 동작 {report.siteCrawl.unexploredControls.length} · 상태 변경 우려로 미실행한 컨트롤 {report.siteCrawl.skippedControls.length} · 화면 변화 없는 동작 {report.siteCrawl.nonNavigatingControls.length} · 안전상 미방문 링크 {report.siteCrawl.skippedLinks.length} · 대기 경로 {report.siteCrawl.pendingUrls.length} · 깊이 {report.siteCrawl.maxDepth} · {(report.siteCrawl.durationMs / 1000).toFixed(1)}초</p>
+        {report.siteCrawl.stopReason && <p>중단 사유 · {report.siteCrawl.stopReason}</p>}
+        <details><summary>방문 경로와 화면 상태 보기 ({report.siteCrawl.pages.length})</summary><ol>{report.siteCrawl.pages.slice(0, 150).map((page) => <li key={page.evidenceId}>{page.outcome === "OBSERVED" ? "확인" : "접근 실패"} · HTTP {page.status ?? "응답 없음"} · 깊이 {page.depth} · <a href={page.url} target="_blank" rel="noreferrer">{page.url}</a> · {page.statePath.length ? `화면 상태 ${page.statePath.join(" → ")} · ` : ""}{page.title || "제목 없음"} · 링크 {page.linksFound} · DOM 요소 {page.elementCount} · 숨겨진 문구 {page.hiddenTextElementCount} · 상호작용 {page.interactiveCount} · 화면 동작 후보 {page.controlsFound.join(", ") || "없음"} · {page.evidenceId}{page.failureReason ? ` · ${page.failureReason}` : ""}<details><summary>페이지에서 읽은 텍스트와 컨트롤 보기</summary><ul>{page.domText.slice(0, 200).map((item, index) => <li key={`${page.evidenceId}:text:${index}`}>{item.visible ? "표시" : "숨김"} · {item.tag} · {item.text} · {item.fontSize} · {item.color}</li>)}</ul><ul>{page.interactives.slice(0, 200).map((item, index) => <li key={`${page.evidenceId}:interactive:${index}`}>{item.visible ? "표시" : "숨김"} · {item.tag}{item.role ? `/${item.role}` : ""}{item.type ? `/${item.type}` : ""} · {item.label || "이름 없음"}{item.selected !== undefined ? ` · 선택 ${item.selected ? "됨" : "안 됨"}` : ""}{item.disabled ? " · 비활성" : ""}{item.href ? ` · ${item.href}` : ""}</li>)}</ul>{page.formsFound.map((form, index) => <p key={`${page.evidenceId}:form:${index}`}>{form.method} form · {form.action}</p>)}</details></li>)}</ol>{report.siteCrawl.pages.length > 150 && <p>화면에는 150개까지 표시합니다. 전체 크롤링 기록은 JSON 다운로드에 포함됩니다.</p>}</details>
+        {report.siteCrawl.unexploredControls.length > 0 && <details><summary>확인하지 못한 안전 화면 동작 ({report.siteCrawl.unexploredControls.length})</summary><ul>{report.siteCrawl.unexploredControls.slice(0, 150).map((item, index) => <li key={`${item.url}:${item.label}:${index}`}>{item.label} · {item.reason} · {item.url}</li>)}</ul></details>}
+        {report.siteCrawl.nonNavigatingControls.length > 0 && <details><summary>눌렀지만 화면 변화가 없던 동작 ({report.siteCrawl.nonNavigatingControls.length})</summary><ul>{report.siteCrawl.nonNavigatingControls.slice(0, 150).map((item, index) => <li key={`${item.url}:${item.label}:${index}`}>{item.label} · {item.reason} · {item.url}</li>)}</ul></details>}
+        {report.siteCrawl.skippedControls.length > 0 && <details><summary>읽되 실행하지 않은 상태 변경 컨트롤 ({report.siteCrawl.skippedControls.length})</summary><ul>{report.siteCrawl.skippedControls.slice(0, 150).map((item, index) => <li key={`${item.url}:${item.label}:${index}`}>{item.label} · {item.reason} · {item.url}</li>)}</ul></details>}
+        {report.siteCrawl.pendingUrls.length > 0 && <details><summary>아직 방문하지 못한 경로 보기 ({report.siteCrawl.pendingUrls.length})</summary><ul>{report.siteCrawl.pendingUrls.slice(0, 150).map((url) => <li key={url}>{url}</li>)}</ul></details>}
+        {report.siteCrawl.skippedLinks.length > 0 && <details><summary>안전상 열지 않은 경로 보기 ({report.siteCrawl.skippedLinks.length})</summary><ul>{report.siteCrawl.skippedLinks.slice(0, 100).map((item, index) => <li key={`${item.url}:${index}`}>{item.reason} · {item.url} · 발견 위치 {item.discoveredFrom}</li>)}</ul></details>}
+      </section>}
       {report.collectionFailure && <p role="status">수집 안내{report.collectionFailureCode ? ` (${failureLabels[report.collectionFailureCode] ?? report.collectionFailureCode})` : ""}: {report.collectionFailure}</p>}
       {report.executionMode === "DYNAMIC" && report.scanStatus === "PARTIAL" && <section aria-label="동적 검사 대안">
         <h2>검사를 이어가는 방법</h2>
@@ -114,10 +139,15 @@ export function ScanReport({ id }: { id: string }) {
         <h2>추가 흐름 관찰</h2>
         <p>로그인·구독·해지 후보를 읽기 전용으로 확인했습니다. 폼 제출이나 결제·해지 동작은 실행하지 않았습니다.</p>
         <ul>{report.surfaceObservations.map((item) => <li key={`${item.kind}:${item.url}`}>
-          {item.kind === "AUTH" ? "로그인·회원가입" : item.kind === "SUBSCRIPTION" ? "구독·멤버십" : item.kind === "CANCELLATION" ? "해지·환불" : item.kind === "COUPON" ? "쿠폰·프로모션" : item.kind === "RECOMMENDATION" ? "추천·인기" : item.kind === "CATALOG" ? "카테고리·상품목록" : "배송·교환·정책"} · {item.outcome === "OBSERVED" ? "확인됨" : item.outcome === "CROSS_ORIGIN" ? "외부 출처로 미검사" : "접근 실패"} · {item.url} · 증거 {item.evidenceId}
+          {item.kind === "AUTH" ? "로그인·회원가입" : item.kind === "SUBSCRIPTION" ? "구독·멤버십" : item.kind === "CANCELLATION" ? "해지·환불" : item.kind === "COUPON" ? "쿠폰·프로모션" : item.kind === "RECOMMENDATION" ? "추천·인기" : item.kind === "CATALOG" ? "카테고리·상품목록" : "배송·교환·정책"} · {item.outcome === "OBSERVED" ? "확인됨" : item.outcome === "DISCOVERED" ? "후보 발견·상세 미검사" : item.outcome === "CROSS_ORIGIN" ? "외부 출처로 미검사" : "접근 실패"} · {item.url} · 증거 {item.evidenceId}
           {item.title ? ` · ${item.title}` : ""}
         </li>)}</ul>
       </section> : null}
+      <section aria-label="16개 유형별 검사 결과">
+        <h2>16개 유형별 검사 결과</h2>
+        <p>증거가 부족한 유형은 정상으로 간주하지 않고 미검사 사유를 표시합니다.</p>
+        <ul>{Object.entries(legalRules).map(([key, rule]) => { const result = report.ruleCoverage?.[key as keyof typeof legalRules]; return <li key={key}><strong>{rule.title}</strong> · {!result ? "상태 미기록" : result.status === "SUSPECTED" ? "위험 의심" : result.status === "REVIEW_NEEDED" ? "검토 필요" : result.status === "NOT_OBSERVED" ? "검사 범위에서 미발견" : "미검사"}{result?.reason ? ` · ${result.reason}` : ""}</li>; })}</ul>
+      </section>
       <h2>발견된 항목</h2>
       {report.findings.length ? <ul>{report.findings.map((finding) => (
         <li key={finding.id}><Link href={"/report/" + id + "/" + finding.id}>{legalRules[finding.type].title}</Link> · {stageLabels[finding.stage]}</li>

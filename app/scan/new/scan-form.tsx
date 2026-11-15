@@ -78,7 +78,7 @@ export function ScanForm() {
       {dynamic && <fieldset>
         <legend>전체 진단 범위</legend>
         <p>공개 화면, 상품 상세, 장바구니, 주문서의 선택 상태·가격·추가 비용·안내 문구·접근 차단을 기록합니다. 결제와 주문 확정은 누르지 않습니다.</p>
-        <div className="scan-scope-summary"><span>예상 시간</span><strong>약 30초~3분</strong><small>사이트 응답·로그인·보안문자에 따라 달라질 수 있어요.</small></div>
+        <div className="scan-scope-summary"><span>예상 시간</span><strong>보통 수초~1분</strong><small>사이트 응답·로그인·보안문자에 따라 달라질 수 있어요.</small></div>
         <legend>테스트 계정(선택)</legend>
         <p>회원 전용 가격이나 주문서까지 확인하려면 운영자가 만든 테스트 계정을 입력하세요. 비밀번호는 진단 작업이 끝나면 삭제합니다.</p>
         <label className="field">아이디<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} /></label>

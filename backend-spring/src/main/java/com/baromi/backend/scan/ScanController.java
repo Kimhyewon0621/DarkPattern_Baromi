@@ -2,12 +2,15 @@ package com.baromi.backend.scan;
 import com.baromi.backend.shop.ShopController;
 import com.baromi.backend.shop.ShopRepository;
 import java.net.URI; import java.time.Instant; import java.util.LinkedHashMap; import java.util.Map; import java.util.UUID;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.http.*; import org.springframework.web.bind.annotation.*;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 @RestController @RequestMapping("/api/v1/scans")
 public class ScanController {
+ private static final ObjectMapper JSON = new ObjectMapper();
  private final ScanRepository scans; private final ShopRepository shops;
  private final String workerToken;
  public ScanController(ScanRepository scans,ShopRepository shops,@Value("${baromi.worker-token:}") String workerToken){this.scans=scans;this.shops=shops;this.workerToken=workerToken;}
@@ -22,19 +25,27 @@ public class ScanController {
  }
  @PatchMapping("/{id}/status") public ResponseEntity<?> updateStatus(@RequestHeader("X-Baromi-Worker") String token,@PathVariable String id,@RequestBody StatusRequest request){
   if(workerToken.isBlank()||!workerToken.equals(token)||request==null||!isAllowed(request.status())) return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of("error","워커 인증이 필요합니다."));
+  String phaseResultsJson;
+  try { phaseResultsJson = encodePhaseResults(request.phaseResults()); }
+  catch (IllegalArgumentException invalid) { return ResponseEntity.badRequest().body(Map.of("error", invalid.getMessage())); }
+  if (request.reportJson() != null && request.reportJson().length() > 4_000_000)
+   return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE).body(Map.of("error","보고서 JSON이 허용 크기를 초과했습니다."));
   var existing = scans.findById(id);
   if (existing.isPresent()) {
    var scan = existing.get();
    if (!canTransition(scan.getStatus(), request.status())) return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error","허용되지 않는 진단 상태 전이입니다.","status",scan.getStatus()));
    scan.setStatus(request.status()); scan.setCurrentStage(request.stage());
-   if (request.reportJson() != null && request.reportJson().length() <= 4_000_000) {
+   if (phaseResultsJson != null) scan.setPhaseResultsJson(phaseResultsJson);
+   if (request.reportJson() != null) {
     var days = Math.min(Math.max(retentionDays(), 1), 3650);
     scan.setReportJson(request.reportJson(), Instant.now().plusSeconds(days * 86_400L));
    }
    scans.save(scan);
    return ResponseEntity.ok(statusBody(scan));
   }
-  var imported = scans.save(new ScanEntity(id, null, request.status(), Instant.now())); imported.setCurrentStage(request.stage()); imported = scans.save(imported);
+  var imported = scans.save(new ScanEntity(id, null, request.status(), Instant.now())); imported.setCurrentStage(request.stage());
+  if (phaseResultsJson != null) imported.setPhaseResultsJson(phaseResultsJson);
+  imported = scans.save(imported);
   var body = statusBody(imported); body.put("imported", true);
   return ResponseEntity.status(HttpStatus.ACCEPTED).body(body);
  }
@@ -57,7 +68,11 @@ public class ScanController {
  }
  @GetMapping("/{id}/report") public ResponseEntity<?> report(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String id){
   return scans.findById(id).filter(s->s.getShopId()!=null && shops.findByIdAndOwnerHash(s.getShopId(),ShopController.ownerHashForApi(owner)).isPresent())
-   .map(s -> s.getReportJson() == null ? ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error","진단 보고서가 아직 저장되지 않았습니다.")) : ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(s.getReportJson()))
+   .map(s -> {
+    if (s.getReportJson() == null || (s.getReportExpiresAt() != null && s.getReportExpiresAt().isBefore(Instant.now())))
+     return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error","진단 보고서가 만료되었거나 아직 저장되지 않았습니다."));
+    return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(s.getReportJson());
+   })
    .orElseGet(() -> ResponseEntity.notFound().build());
  }
  @GetMapping("/shop/{shopId}") public ResponseEntity<?> listForShop(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String shopId,@RequestParam(defaultValue="50") int limit){
@@ -67,9 +82,19 @@ public class ScanController {
   return ResponseEntity.ok(Map.of("shopId", shopId, "limit", safeLimit, "scans", items));
  }
  public record CreateScanRequest(String id, String shopId, String targetUrl, String executionMode, String viewport, String purchasePath) {}
- public record StatusRequest(String status, String stage, String reportJson) {}
+ public record StatusRequest(String status, String stage, String reportJson, Map<String,Object> phaseResults) {}
  public record RecoverRequest(Instant staleBefore) {}
- private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); return body; }
+ private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("phaseResults",decodePhaseResults(scan.getPhaseResultsJson())); body.put("shopId",scan.getShopId()); body.put("targetUrl",scan.getTargetUrl()); body.put("executionMode",scan.getExecutionMode()); body.put("viewport",scan.getViewport()); body.put("purchasePath",scan.getPurchasePath()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); return body; }
+ private static String encodePhaseResults(Map<String,Object> phases){
+  if(phases==null) return null;
+  try { var json=JSON.writeValueAsString(phases); if(json.length()>262_144) throw new IllegalArgumentException("단계별 진단 상태가 허용 크기를 초과했습니다."); return json; }
+  catch(JsonProcessingException invalid){ throw new IllegalArgumentException("단계별 진단 상태 JSON이 올바르지 않습니다."); }
+ }
+ private static Object decodePhaseResults(String json){
+  if(json==null || json.isBlank()) return Map.of();
+  try { return JSON.readValue(json, Map.class); }
+  catch(JsonProcessingException invalid){ return Map.of(); }
+ }
  private static boolean isAllowed(String status){return switch(status){case "queued","running","partial","succeeded","failed","cancelled" -> true; default -> false;};}
  private static boolean canTransition(String from,String to){
   if(from.equals(to)) return true;

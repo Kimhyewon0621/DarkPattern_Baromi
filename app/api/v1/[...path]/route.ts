@@ -14,16 +14,49 @@ import type { scanDemo } from "../../../../src/scan";
 import { fetchPublicHtml } from "../../../../src/public-html";
 import { createSiteVerification, hashToken, matchesVerification, verificationDnsPrefix, verificationFile, verificationName } from "../../../../src/site-verification";
 import { encryptCredentials } from "../../../../src/credential-vault";
-import { mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, springAuthoritative, springReadiness } from "../../../../src/spring-status";
+import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
+import { scanStaleBefore } from "../../../../src/scan-timeout";
+import { supabaseOwner } from "../../../../src/supabase-auth";
+import { buildRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
+import { buildAiCandidatePayload } from "../../../../src/ai-review-payload";
+import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
 type Context = { params: Promise<{ path: string[] }> };
 type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string };
 const cookie = "darkpattern-session";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const error = (message: string, status: number) => Response.json({ error: message }, { status });
+const normalizeScanStatus = (value: unknown) => {
+  if (typeof value !== "string") return value;
+  const normalized: Record<string, string> = {
+    queued: "QUEUED", running: "RUNNING", partial: "PARTIAL", succeeded: "COMPLETED",
+    completed: "COMPLETED", failed: "FAILED", cancelled: "CANCELLED",
+  };
+  return normalized[value.toLowerCase()] ?? value.toUpperCase();
+};
+const springProgress = (scan: Record<string, unknown>, status: string) => {
+  const purchasePath = scan.purchasePath === "DIRECT" ? "DIRECT" : "CART";
+  const required = purchasePath === "DIRECT" ? ["product", "checkout"] : stages;
+  const phaseResults = typeof scan.phaseResults === "object" && scan.phaseResults !== null
+    ? scan.phaseResults as Record<string, { status?: string }>
+    : {};
+  const active = status === "QUEUED" || status === "RUNNING";
+  const coverage = Object.fromEntries(stages.map((stage) => [stage,
+    !required.includes(stage) ? "SKIPPED" : phaseResults[stage]?.status ?? (active ? "PENDING" : "BLOCKED")]));
+  const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => [kind,
+    phaseResults[`surface:${kind}`]?.status ?? (active ? "PENDING" : "BLOCKED")]));
+  const phaseValues = Object.values(phaseResults);
+  const terminalCount = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus ?? "")).length;
+  const progress = phaseValues.length ? Math.round(terminalCount * 100 / phaseValues.length) : 0;
+  return { progress: active ? progress : 100, coverage, surfaceCoverage, phaseResults };
+};
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
+const hasInvalidBearer = (request: NextRequest) => {
+  const authorization = request.headers.get("authorization");
+  return Boolean(process.env.SUPABASE_JWT_SECRET && authorization?.startsWith("Bearer ") && !supabaseOwner(request));
+};
 const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: number) => {
   const address = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   const bucketKey = `${address}:${key}`;
@@ -43,6 +76,7 @@ async function getReport(path: string | null): Promise<Report | null> {
 
 export async function POST(request: NextRequest, context: Context) {
   const route = (await context.params).path;
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
   if (request.headers.get("content-type")?.split(";")[0] !== "application/json") {
     return error("JSON 요청이 필요합니다.", 415);
   }
@@ -51,7 +85,8 @@ export async function POST(request: NextRequest, context: Context) {
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(demoOrigin()).origin) return error("동일 출처 요청이 필요합니다.", 403);
   const body = await request.json().catch(() => null);
-  const session = request.cookies.get(cookie)?.value;
+  const jwtOwner = supabaseOwner(request);
+  const session = jwtOwner ?? request.cookies.get(cookie)?.value;
 
   if (route.join("/") === "shops") {
     const limited = rateLimit(request, "shops", 20, 60 * 60 * 1000);
@@ -78,7 +113,7 @@ export async function POST(request: NextRequest, context: Context) {
       await db().shop.delete({ where: { id: shop.id } }).catch(() => undefined);
       return error("최종 상태 저장소에 연결할 수 없어 상점을 등록하지 못했습니다.", 503);
     }
-    if (!session) response.cookies.set(cookie, token, {
+    if (!session && !jwtOwner) response.cookies.set(cookie, token, {
       httpOnly: true, sameSite: "strict", path: "/", maxAge: 24 * 60 * 60,
       secure: request.nextUrl.protocol === "https:",
     });
@@ -201,12 +236,12 @@ export async function POST(request: NextRequest, context: Context) {
     });
     if (!scan?.reportPath) return notFound();
     if (scan.shop?.plan !== "PREMIUM") return error("AI 정밀 분석은 유료 플랜에서 사용자가 별도로 요청할 수 있습니다.", 402);
-    const report = await getReport(scan.reportPath);
-    const candidates = ((report as unknown as { reviewCandidates?: unknown[] } | null)?.reviewCandidates ?? []);
-    if (!candidates.length) return error("AI로 추가 분석할 검토 후보가 없습니다.", 409);
     if (scan.aiReview?.status === "QUEUED" || scan.aiReview?.status === "RUNNING" || scan.aiReview?.status === "COMPLETED") {
       return Response.json({ id: scan.aiReview.id, status: scan.aiReview.status }, { status: scan.aiReview.status === "COMPLETED" ? 200 : 202 });
     }
+    const report = await getReport(scan.reportPath);
+    const candidates = buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]);
+    if (!candidates.length) return error("AI로 전달할 검토 후보와 확인 가능한 증거가 없습니다.", 409);
     const job = await db().aiReview.upsert({
       where: { scanId: id },
       create: { id: randomUUID(), scanId: id, status: "QUEUED", candidateCount: candidates.length },
@@ -215,13 +250,21 @@ export async function POST(request: NextRequest, context: Context) {
     return Response.json({ id: job.id, status: job.status }, { status: 202 });
   }
   if (resource === "scans" && id && action === "ai-review-labels" && route.length === 3) {
-    const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true } });
+    const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true, reportPath: true } });
     if (!scan?.aiReview) return notFound();
     const labels = body?.labels;
-    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => !item || typeof item !== "object" || typeof (item as { candidateId?: unknown }).candidateId !== "string" || !["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? ""))) {
+    const candidateIds = new Set((((await getReport(scan.reportPath)) as unknown as { reviewCandidates?: { id?: string }[] } | null)?.reviewCandidates ?? []).map((candidate) => candidate.id).filter((value): value is string => Boolean(value)));
+    const seenCandidateIds = new Set<string>();
+    if (!Array.isArray(labels) || labels.length > 40 || labels.some((item: unknown) => {
+      const candidateId = item && typeof item === "object" ? (item as { candidateId?: unknown }).candidateId : undefined;
+      const valid = Boolean(item && typeof item === "object" && typeof candidateId === "string" && candidateIds.has(candidateId) && !seenCandidateIds.has(candidateId) && ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"].includes((item as { label?: string }).label ?? "") && ((item as { adjudication?: unknown }).adjudication === undefined || ["PENDING", "AGREED"].includes((item as { adjudication?: string }).adjudication ?? "")));
+      if (typeof candidateId === "string") seenCandidateIds.add(candidateId);
+      return !valid;
+    })) {
       return error("후보 ID와 허용된 라벨이 필요합니다.", 400);
     }
-    const saved = await db().aiReview.update({ where: { id: scan.aiReview.id }, data: { operatorLabelsJson: JSON.stringify(labels), labeledAt: new Date(), labelSource: "OPERATOR" } });
+    const normalizedLabels = labels.map((item: { candidateId: string; label: string; adjudication?: "PENDING" | "AGREED" }) => ({ ...item, adjudication: item.adjudication ?? "PENDING" }));
+    const saved = await db().aiReview.update({ where: { id: scan.aiReview.id }, data: { operatorLabelsJson: JSON.stringify(normalizedLabels), labeledAt: new Date(), labelSource: "OPERATOR" } });
     return Response.json({ id: saved.id, status: saved.status, labeledAt: saved.labeledAt });
   }
   if (resource === "scans" && id && action === "cancel" && route.length === 3) {
@@ -233,7 +276,15 @@ export async function POST(request: NextRequest, context: Context) {
     const queued = await db().scan.updateMany({
       where: { ...where, status: "QUEUED" }, data: { status: "CANCELLED", credentialCiphertext: null },
     });
-    if (queued.count) return Response.json({ status: "CANCELLED" });
+    if (queued.count) {
+      const scan = await db().scan.findUnique({ where: { id }, select: { purchasePath: true, executionMode: true, phaseResultsJson: true } });
+      if (scan) {
+        const phases = closeCancelledScanPhases(parseScanPhases(scan.phaseResultsJson,
+          initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC")));
+        await db().scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: "CANCELLED" } });
+      }
+      return Response.json({ status: "CANCELLED" });
+    }
     const scan = await db().scan.findFirst({ where, select: { status: true } });
     if (scan?.status === "RUNNING") {
       const changed = await db().scan.updateMany({
@@ -255,7 +306,7 @@ export async function GET(request: NextRequest, context: Context) {
       const [queued, running, stale] = await Promise.all([
         db().scan.count({ where: { status: "QUEUED" } }),
         db().scan.count({ where: { status: "RUNNING" } }),
-        db().scan.count({ where: { status: "RUNNING", startedAt: { lt: new Date(Date.now() - 6 * 60 * 1000) } } }),
+        db().scan.count({ where: { status: "RUNNING", startedAt: { lt: scanStaleBefore() } } }),
       ]);
       const healthy = stale === 0 && spring.ready;
       return Response.json({
@@ -269,13 +320,37 @@ export async function GET(request: NextRequest, context: Context) {
       return error("데이터베이스를 사용할 수 없습니다.", 503);
     }
   }
-  const session = request.cookies.get(cookie)?.value;
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
+  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   if (!session) return notFound();
   const ownerHash = hash(session);
+  if (route.join("/") === "shops") {
+    const limitParam = Number(request.nextUrl.searchParams.get("limit") ?? 50);
+    const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.trunc(limitParam), 1), 100) : 50;
+    if (springAuthoritative()) {
+      try {
+        const spring = await listSpringShops(session, limit);
+        if (spring) return Response.json(spring, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
+    const shops = await db().shop.findMany({
+      where: { ownerHash }, orderBy: { consentAt: "desc" }, take: limit,
+      select: { id: true, url: true, consentAt: true, verifiedAt: true },
+    });
+    return Response.json({ limit, shops: shops.map((shop) => ({
+      shopId: shop.id, url: shop.url, consentAt: shop.consentAt, verifiedAt: shop.verifiedAt,
+    })) });
+  }
   const [resource, id, action, ...extra] = route;
   if (!id || extra.length) return notFound();
 
   if (resource === "shops" && action === "scans" && route.length === 3) {
+    if (springAuthoritative()) {
+      try {
+        const spring = await listSpringShopScans(id, session);
+        if (spring) return Response.json(spring, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
     const shop = await db().shop.findFirst({ where: { id, ownerHash }, select: { id: true } });
     if (!shop) return notFound();
     const scans = await db().scan.findMany({
@@ -293,6 +368,12 @@ export async function GET(request: NextRequest, context: Context) {
     })));
   }
   if (resource === "shops" && !action) {
+    if (springAuthoritative()) {
+      try {
+        const spring = await readSpringShop(id, session);
+        if (spring) return Response.json(spring, { headers: { "Cache-Control": "private, no-store" } });
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
     const shop = await db().shop.findFirst({
       where: { id, ownerHash }, select: { id: true, url: true, consentAt: true, verifiedAt: true },
     });
@@ -319,6 +400,17 @@ export async function GET(request: NextRequest, context: Context) {
     }) : notFound();
   }
   if (resource !== "scans") return notFound();
+  if (springAuthoritative() && action === "findings") {
+    try {
+      const spring = await readSpringScan(id, session, true);
+      const report = spring && Array.isArray(spring.findings)
+        ? spring as { findings?: unknown[] }
+        : spring && typeof spring.reportJson === "string"
+          ? JSON.parse(spring.reportJson) as { findings?: unknown[] }
+          : null;
+      if (report?.findings) return Response.json(report.findings, { headers: { "Cache-Control": "private, no-store" } });
+    } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+  }
   if (springAuthoritative() && (action === undefined || action === "report")) {
     let spring: Record<string, unknown> | null;
     try {
@@ -327,12 +419,18 @@ export async function GET(request: NextRequest, context: Context) {
       return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503);
     }
     if (spring) {
+      const normalizedStatus = normalizeScanStatus(spring.status);
       if (action === "report") {
-        return Response.json({ ...spring, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
+        const response = Response.json({ ...spring, status: normalizedStatus, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
           headers: { "Cache-Control": "private, no-store" },
         });
+        if (request.nextUrl.searchParams.get("download") === "1") {
+          response.headers.set("Content-Disposition", `attachment; filename="baromi-${id}.json"`);
+        }
+        return response;
       }
-      return Response.json({ ...spring, source: "SPRING_POSTGRES", progress: spring.status === "queued" || spring.status === "running" ? 0 : 100 }, {
+      const progress = springProgress(spring, String(normalizedStatus));
+      return Response.json({ ...spring, status: normalizedStatus, source: "SPRING_POSTGRES", ...progress }, {
         headers: { "Cache-Control": "private, no-store" },
       });
     }
@@ -342,7 +440,12 @@ export async function GET(request: NextRequest, context: Context) {
   });
   if (!scan) return notFound();
   const active = ["QUEUED", "RUNNING"].includes(scan.status);
+  const phaseResults = parseScanPhases(scan.phaseResultsJson, initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC"));
   const storedReport = !active && scan.reportPath ? await getReport(scan.reportPath).catch(() => null) : null;
+  const reportEvidence = storedReport as unknown as Parameters<typeof buildRuleCoverage>[0] | null;
+  const ruleCoverage: RuleCoverage | null = active ? null : reportEvidence
+    ? ((storedReport as unknown as { ruleCoverage?: RuleCoverage }).ruleCoverage ?? buildRuleCoverage(reportEvidence))
+    : null;
   const observedStages = new Set(storedReport?.snapshots.map(({ stage }) => stage) ?? []);
   const requiredStages = scan.purchasePath === "DIRECT" ? new Set<Stage>(["product", "checkout"]) : new Set<Stage>(stages);
   const coverage = Object.fromEntries(stages.map((stage, index) => [stage,
@@ -350,16 +453,21 @@ export async function GET(request: NextRequest, context: Context) {
       : !requiredStages.has(stage) ? "SKIPPED"
         : active ? (index < scan.progress ? "COVERED" : "PENDING") : "BLOCKED",
   ]));
-  const progressStages = scan.purchasePath === "DIRECT" ? 2 : stages.length;
+  const phaseValues = Object.values(phaseResults);
+  const terminalPhases = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus)).length;
+  const progressStages = phaseValues.length;
   const summary = {
     suspected: scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
     reviewNeeded: scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
-    notTested: active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
+    notObserved: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_OBSERVED").length : 0,
+    notTested: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_TESTED").length
+      : active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
   };
   const surfaceObservations = ((storedReport as unknown as { surfaceObservations?: { kind: DiagnosticSurfaceKind; outcome: string }[] } | null)?.surfaceObservations ?? []);
   const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => {
     if (scan.executionMode !== "DYNAMIC") return [kind, "SKIPPED"];
     if (active) return [kind, "PENDING"];
+    if (!storedReport) return [kind, "BLOCKED"];
     const observations = surfaceObservations.filter((item) => item.kind === kind);
     return [kind, observations.some((item) => item.outcome === "OBSERVED") ? "COVERED"
       : observations.some((item) => item.outcome === "DISCOVERED") ? "DISCOVERED"
@@ -371,7 +479,8 @@ export async function GET(request: NextRequest, context: Context) {
       durationMs: scan.durationMs,
       purchasePath: scan.purchasePath,
       status: scan.status, cancelRequested: scan.cancelRequested, currentStage: scan.currentStage,
-      progress: active ? Math.round(Math.min(scan.progress, progressStages) * 100 / progressStages) : 100, coverage, surfaceCoverage, summary,
+      progress: active ? Math.round(Math.min(terminalPhases, progressStages) * 100 / progressStages) : 100, coverage, surfaceCoverage, phaseResults, ruleCoverage, summary,
+      hasReport: Boolean(scan.reportPath),
     });
   }
   if (action === "findings") return Response.json(scan.findings);
@@ -399,7 +508,7 @@ export async function GET(request: NextRequest, context: Context) {
     } : null;
     const response = Response.json({ ...report, viewport: scan.viewport, purchasePath: scan.purchasePath,
       durationMs: scan.durationMs,
-      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, summary,
+      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, ruleCoverage, summary,
       aiEligible: scan.shop?.plan === "PREMIUM", aiReview,
       findings });
     if (request.nextUrl.searchParams.get("download") === "1") {
@@ -411,10 +520,19 @@ export async function GET(request: NextRequest, context: Context) {
 }
 
 export async function DELETE(request: NextRequest, context: Context) {
-  const session = request.cookies.get(cookie)?.value;
+  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
+  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
+  const route = await context.params;
+  if (route.path.length === 1 && route.path[0] === "session") {
+    const response = NextResponse.json({ revoked: Boolean(session) });
+    response.cookies.set(cookie, "", {
+      httpOnly: true, sameSite: "strict", path: "/", maxAge: 0,
+      secure: request.nextUrl.protocol === "https:",
+    });
+    return response;
+  }
   if (!session) return notFound();
   const ownerHash = hash(session);
-  const route = await context.params;
   const [resource, id] = route.path;
   if (!id || route.path.length !== 2) return notFound();
   if (resource === "scans") {

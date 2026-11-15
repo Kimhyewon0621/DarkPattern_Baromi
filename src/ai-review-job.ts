@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { db } from "./db";
 import { estimateAiUsage, exceedsAiCostCap } from "./ai-cost";
-import { buildAiCandidatePayload } from "./ai-review-payload";
+import { buildAiCandidatePayload, restoreAiCandidateIds, toAiProviderCandidates } from "./ai-review-payload";
+import { legalRules } from "./legal-rules";
 export { buildAiCandidatePayload } from "./ai-review-payload";
 
 export const AI_REVIEW_PROMPT_VERSION = "review-v1";
@@ -29,7 +30,7 @@ const reviewSchema = {
           label: { type: "string", enum: ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"] },
           confidence: { type: "number", minimum: 0, maximum: 1 },
           rationale: { type: "string" },
-          suggestedRule: { type: ["string", "null"] },
+          suggestedRule: { type: ["string", "null"], enum: [...Object.keys(legalRules), null] },
         },
       },
     },
@@ -50,7 +51,7 @@ function outputText(body: unknown) {
   return "";
 }
 
-function validatedDecisions(value: unknown, candidates: Candidate[]): AiDecision[] {
+function validatedDecisions(value: unknown, candidates: { id: string }[]): AiDecision[] {
   const allowed = new Set(candidates.map(({ id }) => id));
   const rows = Array.isArray(value) ? value : value && typeof value === "object" && Array.isArray((value as { decisions?: unknown }).decisions) ? (value as { decisions: unknown[] }).decisions : [];
   return rows.flatMap((row) => {
@@ -62,7 +63,8 @@ function validatedDecisions(value: unknown, candidates: Candidate[]): AiDecision
       label: item.label,
       confidence: Math.min(Math.max(Number(item.confidence) || 0, 0), 1),
       rationale: String(item.rationale ?? "").slice(0, 800),
-      suggestedRule: item.suggestedRule ? String(item.suggestedRule).slice(0, 80) : null,
+      suggestedRule: typeof item.suggestedRule === "string" && Object.hasOwn(legalRules, item.suggestedRule)
+        ? item.suggestedRule : null,
     }];
   });
 }
@@ -78,9 +80,16 @@ export async function runAiReviewJob(id: string) {
     const apiKey = process.env.BAROMI_AI_API_KEY;
     const model = process.env.BAROMI_AI_MODEL;
     if (!endpoint || !apiKey || !model) throw new Error("AI 정밀 분석 제공자가 설정되지 않았습니다.");
-    const report = JSON.parse(await readFile(job.scan.reportPath, "utf8")) as { reviewCandidates?: Candidate[]; snapshots?: Evidence[] };
+    const report = JSON.parse(await readFile(job.scan.reportPath, "utf8")) as {
+      reviewCandidates?: Candidate[];
+      snapshots?: Evidence[];
+      siteCrawl?: { pages?: import("./site-crawler").CrawledSitePage[] };
+      surfaceObservations?: import("./purchase-journey").SurfaceObservation[];
+    };
     const candidates = buildAiCandidatePayload(report);
     if (!candidates.length) throw new Error("AI로 추가 분석할 검토 후보가 없습니다.");
+    // Keep report-local evidence and candidate IDs out of the provider payload.
+    const requestCandidates = toAiProviderCandidates(candidates);
     await store.aiReview.update({ where: { id }, data: { candidateCount: candidates.length, provider: new URL(endpoint).hostname, model } });
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 60_000);
@@ -93,7 +102,7 @@ export async function runAiReviewJob(id: string) {
           model,
           input: [
             { role: "system", content: "당신은 쇼핑 인터페이스의 다크패턴 검토 분류기입니다. 제공된 관찰만 판단하고 법률 위반을 단정하지 마세요. JSON만 반환하세요." },
-            { role: "user", content: JSON.stringify({ promptVersion: AI_REVIEW_PROMPT_VERSION, task: "각 후보를 분류", labels: ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"], candidates }) },
+            { role: "user", content: JSON.stringify({ promptVersion: AI_REVIEW_PROMPT_VERSION, task: "각 후보를 분류", labels: ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"], candidates: requestCandidates }) },
           ],
           text: { format: { type: "json_schema", name: "baromi_ai_review", strict: true, schema: reviewSchema } },
         }),
@@ -102,7 +111,7 @@ export async function runAiReviewJob(id: string) {
     if (!response.ok) throw new Error(`AI 제공자 응답 실패(${response.status})`);
     const body = await response.json() as { usage?: { input_tokens?: number; output_tokens?: number } };
     const text = outputText(body);
-    const decisions = validatedDecisions(JSON.parse(text), candidates);
+    const decisions = restoreAiCandidateIds(validatedDecisions(JSON.parse(text), requestCandidates), candidates);
     if (!decisions.length) throw new Error("AI 응답에서 유효한 분석 결과를 읽지 못했습니다.");
     measuredUsage = estimateAiUsage({ provider: new URL(endpoint).hostname, model, purpose: "post-report-dark-pattern-review", inputTokens: body.usage?.input_tokens ?? 0, outputTokens: body.usage?.output_tokens ?? 0 });
     if (exceedsAiCostCap(measuredUsage)) {

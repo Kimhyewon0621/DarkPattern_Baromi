@@ -7,6 +7,7 @@
   },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
+    "local": "bash scripts/local-stack.sh",
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "db:setup": "prisma migrate deploy",
@@ -24,6 +25,8 @@
     "dataset:validate": "tsx scripts/validate-dataset.ts"
     ,"ai:dataset": "tsx scripts/export-ai-dataset.ts"
     ,"ai:evaluate": "tsx scripts/evaluate-ai-review.ts"
+    ,"dataset:groups": "tsx scripts/evaluate-dataset-groups.ts"
+    ,"classifier:evaluate": "tsx scripts/evaluate-review-classifier.ts"
   },
   "dependencies": {
     "@prisma/adapter-better-sqlite3": "7.10.1",

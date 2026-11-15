@@ -1,8 +1,9 @@
 const amount = String.raw`([1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)\s*원`;
 // Option controls vary by storefront. Keep the amount shape strict, but allow
 // arbitrary option wording when the surcharge is explicitly marked with '+'.
-const optionPrice = new RegExp(String.raw`^.+?\s*(?:\(\s*\+\s*${amount}\s*\)|\+\s*${amount})$`);
-const mandatoryFee = new RegExp(String.raw`^필수\s*(처리비|포장비|서비스비|수수료)\s*[:：]?\s*${amount}$`);
+const optionPrice = new RegExp(String.raw`^.+?\s*(?:\(\s*\+\s*${amount}\s*\)|\+\s*${amount})(?:\s+.*)?$`);
+const feeKind = String.raw`(처리비|포장비|서비스비|수수료|이용료|배송비)`;
+const mandatoryFee = new RegExp(String.raw`^(?:필수\s*)?[^\d+]{0,40}?${feeKind}\s*[:：]?\s*\+?\s*${amount}$`);
 const normalize = (value: string) => value.normalize("NFKC").replace(/\s+/g, " ").trim();
 
 export function isVariantOptionLabel(label: string) {
@@ -31,7 +32,7 @@ export function mandatoryFeeFromText(label: string) {
 }
 
 export function feeMentionsFromText(text: string) {
-  const pattern = new RegExp(String.raw`(?:필수\s*)?(처리비|포장비|서비스비|수수료)\s*[:：]?\s*${amount}`, "g");
+  const pattern = new RegExp(String.raw`(?:필수\s*)?[^\d+]{0,40}?${feeKind}\s*[:：]?\s*\+?\s*${amount}`, "g");
   return [...normalize(text).matchAll(pattern)].flatMap((match) => {
     const amount = won(match[2]);
     return amount === null ? [] : [{ key: match[1], won: amount }];

@@ -1,89 +1,89 @@
-import type { Snapshot } from "./rules";
+import type { Finding, Snapshot } from "./rules";
 import type { SurfaceObservation } from "./purchase-journey";
+import type { CrawledSitePage } from "./site-crawler";
 
 export type ReviewCandidate = {
   id: string;
-  kind: "FEE_SEMANTICS" | "OPTION_SEMANTICS" | "SURFACE_FLOW" | "EXPLORATION_UNVERIFIED";
+  kind: "FEE_SEMANTICS" | "OPTION_SEMANTICS" | "SURFACE_FLOW" | "EXPLORATION_UNVERIFIED" | "VISUAL_ACCESSIBILITY" | "SEMANTIC_REVIEW";
   stage: Snapshot["stage"] | "surface";
   text: string;
   reason: string;
   evidenceIds: string[];
+  ruleType?: Finding["type"];
 };
 
-const amount = /(?:[₩$£€]\s*\d[\d,.]*|\d[\d,.]*\s*원)/;
-const feeWords = /(?:배송비|처리비|포장비|서비스비|수수료|보증|보험|추가비용|fee|shipping|handling|service|warranty)/i;
-const optionWords = /(?:옵션|추가|부가|포장|보증|보험|서비스|option|add[- ]?on|warranty)/i;
+const reviewReason = "관찰 내용은 수집했지만, 의미와 맥락을 자동으로 확정하지 않았습니다. 근거 화면을 검토해야 합니다.";
 
-/**
- * Build a bounded, model-ready queue without making an AI call. Numeric and
- * stateful observations stay in deterministic rules; only unresolved wording
- * is queued for a later dictionary/classifier/LLM stage.
- */
+function boundedText(parts: Array<string | undefined>, maxLength = 1_000) {
+  return [...new Set(parts.map((part) => part?.replace(/\s+/g, " ").trim()).filter((part): part is string => Boolean(part)))].join("\n").slice(0, maxLength);
+}
+
+/** Preserve observations for later semantic review without assigning a rule
+ * from merchant-specific or phrase-specific keyword lists. */
 export function collectReviewCandidates(snapshots: Snapshot[]): ReviewCandidate[] {
-  const candidates: ReviewCandidate[] = [];
-  for (const snapshot of snapshots) {
+  return snapshots.flatMap((snapshot) => {
     const evidenceId = snapshot.evidenceId ?? `evidence:${snapshot.stage}`;
-    for (const [index, line] of (snapshot.textLines ?? []).entries()) {
-      if (!amount.test(line)) continue;
-      if (feeWords.test(line) && !/^필수\s*(?:배송비|처리비|포장비|서비스비|수수료)/.test(line)) {
-        candidates.push({
-          id: `review:${evidenceId}:fee:${index}`, kind: "FEE_SEMANTICS", stage: snapshot.stage,
-          text: line, reason: "금액이 포함된 비용 항목의 필수·조건부 의미를 확정하지 못했습니다.", evidenceIds: [evidenceId],
-        });
-      } else if (optionWords.test(line) && !/[+]\s*\d[\d,]*\s*원/.test(line)) {
-        candidates.push({
-          id: `review:${evidenceId}:option:${index}`, kind: "OPTION_SEMANTICS", stage: snapshot.stage,
-          text: line, reason: "금액이 포함된 옵션 문구의 별도 거래 여부를 확정하지 못했습니다.", evidenceIds: [evidenceId],
-        });
-      }
-      if (candidates.length >= 40) return candidates;
-    }
-  }
-  return candidates;
+    const text = boundedText([
+      ...(snapshot.textLines ?? []), ...(snapshot.priceLines ?? []),
+      ...snapshot.options.map(({ label, won, selected }) => `${label} · ${won}원 · ${selected ? "선택됨" : "선택 안 됨"}`),
+      ...snapshot.fees.map(({ label, won, required }) => `${label} · ${won}원 · ${required ? "필수" : "선택"}`),
+      ...(snapshot.precheckedSignals ?? []).map(({ label }) => label),
+      ...(snapshot.decisionControls ?? []).map(({ label, kind, selected }) => `${kind} · ${label}${selected === undefined ? "" : selected ? " · 선택됨" : " · 선택 안 됨"}`),
+    ]);
+    return text ? [{
+      id: `review:snapshot:${evidenceId}`, kind: "SEMANTIC_REVIEW" as const, stage: snapshot.stage,
+      text, reason: reviewReason, evidenceIds: [evidenceId],
+    }] : [];
+  }).slice(0, 40);
+}
+
+/** Keep each observed crawl page available for later review. Text collection
+ * alone does not map a page to a dark-pattern type. */
+export function collectCrawlRuleCandidates(pages: CrawledSitePage[]): ReviewCandidate[] {
+  return pages.filter((page) => page.outcome === "OBSERVED").map((page) => {
+    const text = boundedText([
+      page.title, page.text,
+      ...page.domText.filter((entry) => entry.visible).map((entry) => entry.text),
+      ...page.interactives.filter((item) => item.visible).map((item) => item.label),
+    ]);
+    return {
+      id: `review:crawl:${page.evidenceId}`, kind: "SEMANTIC_REVIEW" as const, stage: "surface" as const,
+      text: text || "화면의 구조화된 요소를 수집했습니다.", reason: reviewReason, evidenceIds: [page.evidenceId],
+    };
+  }).slice(0, 40);
 }
 
 export function collectExplorationReviewCandidate(blocker: { stage: Snapshot["stage"]; action: string; code: string; candidateCount: number } | null): ReviewCandidate[] {
   if (!blocker) return [];
-  const action = blocker.action === "ADD_TO_CART" ? "장바구니 담기" : blocker.action === "DIRECT_BUY" ? "바로구매" : "주문서 이동";
+  const actionNames: Record<string, string> = {
+    ADD_TO_CART: "장바구니 이동", DIRECT_BUY: "바로구매 이동", CHECKOUT: "주문서 이동",
+  };
+  const reasons: Record<string, string> = {
+    ACTION_AMBIGUOUS: `동일 동작 후보 ${blocker.candidateCount}개 중 하나를 안전하게 선택하지 못했습니다.`,
+    LOGIN_REQUIRED: "테스트 계정으로 확인할 수 없는 인증 단계에 도달했습니다.",
+    ACTION_NOT_FOUND: "현재 화면에서 다음 구매 동작을 특정하지 못했습니다.",
+  };
   return [{
-    id: `review:exploration:${blocker.stage}:${blocker.action.toLowerCase()}`,
-    kind: "EXPLORATION_UNVERIFIED",
-    stage: blocker.stage,
-    text: `${action} 경로를 검증하지 못했습니다.`,
-    reason: blocker.code === "ACTION_AMBIGUOUS"
-      ? `후보 ${blocker.candidateCount}개 중 하나로 확정할 수 없어 구매 경로의 상태와 비용 변화를 검증하지 못했습니다.`
-      : blocker.code === "LOGIN_REQUIRED"
-        ? "승인된 로그인 세션 또는 테스트 계정이 필요해 구매 경로를 검증하지 못했습니다."
-        : "동작을 시도했지만 화면 상태 변화를 확인하지 못해 해당 경로를 검증하지 못했습니다.",
+    id: `review:exploration:${blocker.stage}:${blocker.action}`,
+    kind: "EXPLORATION_UNVERIFIED", stage: blocker.stage,
+    text: `${actionNames[blocker.action] ?? "다음 구매 단계"}를 검증하지 못했습니다.`,
+    reason: reasons[blocker.code] ?? "화면 전환 또는 선택 상태 변화를 확인하지 못했습니다.",
     evidenceIds: [`evidence:${blocker.stage}`],
   }];
 }
 
 export function collectSurfaceReviewCandidates(observations: SurfaceObservation[]): ReviewCandidate[] {
   const candidates = observations.filter((item) => item.outcome === "OBSERVED").map((item, index) => ({
-    id: `review:surface:${item.kind.toLowerCase()}:${index}`,
-    kind: "SURFACE_FLOW" as const,
-    stage: "surface" as const,
-    text: item.text.slice(0, 240) || item.title || item.url,
-    reason: item.kind === "AUTH"
-      ? "회원가입·로그인 경로를 확인했지만 구매 전 강제 여부와 비회원 대안을 추가 확인해야 합니다."
-      : item.kind === "SUBSCRIPTION"
-        ? "구독·멤버십 경로를 확인했지만 결제·자동갱신·해지 조건을 추가 확인해야 합니다."
-        : "해지·환불 경로를 확인했지만 가입과 해지의 단계·가시성 대칭성을 추가 확인해야 합니다.",
-    evidenceIds: [item.evidenceId],
+    id: `review:surface:${index}`, kind: "SEMANTIC_REVIEW" as const, stage: "surface" as const,
+    text: boundedText([item.title, item.text]), reason: reviewReason, evidenceIds: [item.evidenceId],
   }));
-  const hasObservedSubscription = observations.some((item) => item.kind === "SUBSCRIPTION" && item.outcome === "OBSERVED");
-  // A discovered URL is not evidence that the cancellation flow was actually
-  // reachable. Failed and cross-origin probes must still leave the missing-
-  // cancellation review candidate visible.
-  const hasCancellation = observations.some((item) => item.kind === "CANCELLATION" && item.outcome === "OBSERVED");
-  if (hasObservedSubscription && !hasCancellation) {
-    candidates.push({
-      id: "review:surface:cancellation:missing", kind: "SURFACE_FLOW", stage: "surface",
-      text: "구독·멤버십 흐름에서 해지 경로를 찾지 못했습니다.",
-      reason: "구독 경로는 확인했지만 같은 공개 흐름에서 해지·자동갱신 중단 경로를 찾지 못해 취소·탈퇴 방해 여부를 검토해야 합니다.",
-      evidenceIds: [observations.find((item) => item.kind === "SUBSCRIPTION" && item.outcome === "OBSERVED")?.evidenceId ?? "surface:subscription:missing-cancellation"],
-    });
-  }
+  const subscription = observations.find((item) => item.kind === "SUBSCRIPTION" && item.outcome === "OBSERVED");
+  const cancellation = observations.some((item) => item.kind === "CANCELLATION" && item.outcome === "OBSERVED");
+  if (subscription && !cancellation) candidates.push({
+    id: "review:surface:cancellation:missing", kind: "SEMANTIC_REVIEW", stage: "surface",
+    text: "구독 화면은 확인했지만 해지 경로의 도달 여부를 확인하지 못했습니다.",
+    reason: "관측 가능한 구독 경로는 있지만 해지 화면에 연결되는 증거가 없습니다.",
+    evidenceIds: [subscription.evidenceId],
+  });
   return candidates;
 }
