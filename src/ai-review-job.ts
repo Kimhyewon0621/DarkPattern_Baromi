@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { db } from "./db";
 import { estimateAiUsage, exceedsAiCostCap } from "./ai-cost";
 import { buildAiCandidatePayload, restoreAiCandidateIds, toAiProviderCandidates } from "./ai-review-payload";
+import { legalRules } from "./legal-rules";
 export { buildAiCandidatePayload } from "./ai-review-payload";
 
 export const AI_REVIEW_PROMPT_VERSION = "review-v1";
@@ -29,7 +30,7 @@ const reviewSchema = {
           label: { type: "string", enum: ["LIKELY_RISK", "NEEDS_REVIEW", "LIKELY_BENIGN", "INSUFFICIENT_EVIDENCE"] },
           confidence: { type: "number", minimum: 0, maximum: 1 },
           rationale: { type: "string" },
-          suggestedRule: { type: ["string", "null"] },
+          suggestedRule: { type: ["string", "null"], enum: [...Object.keys(legalRules), null] },
         },
       },
     },
@@ -62,7 +63,8 @@ function validatedDecisions(value: unknown, candidates: { id: string }[]): AiDec
       label: item.label,
       confidence: Math.min(Math.max(Number(item.confidence) || 0, 0), 1),
       rationale: String(item.rationale ?? "").slice(0, 800),
-      suggestedRule: item.suggestedRule ? String(item.suggestedRule).slice(0, 80) : null,
+      suggestedRule: typeof item.suggestedRule === "string" && Object.hasOwn(legalRules, item.suggestedRule)
+        ? item.suggestedRule : null,
     }];
   });
 }
