@@ -11,7 +11,7 @@ export default function ServiceLayout({ children }: { children: ReactNode }) {
       <div className="app">
         <aside className="side">
           <Link href="/" className="side__brand" aria-label="바로미 홈">
-            <Logo height={28} />
+            <Logo size={26} />
           </Link>
           <SideNav />
           <div className="side__foot">

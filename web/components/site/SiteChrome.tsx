@@ -22,7 +22,7 @@ export function SiteHeader() {
     <header className="lp-header">
       <div className="lp-wrap lp-header__inner">
         <Link href="/" aria-label="바로미 홈">
-          <Logo height={30} />
+          <Logo size={30} />
         </Link>
         <nav aria-label="주요 메뉴">
           {siteNav.map((item) => (
@@ -67,7 +67,7 @@ export function SiteFooter() {
   return (
     <footer className="lp-wrap lp-footer">
       <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 520 }}>
-        <Logo height={34} />
+        <Logo size={36} />
         <p className="faint" style={{ fontSize: 13 }}>
           결과는 공정위 가이드라인 기준의 위험 신호예요. 법률 위반을 판단하거나 적법함을 보증하지 않아요.
           결제와 주문 확정은 실행하지 않아요. © 2026 바로미
