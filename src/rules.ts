@@ -1,6 +1,10 @@
 import { detectPreselection } from "./detectors/preselection";
 import { detectDripPricing } from "./detectors/drip-pricing";
 import { detectSneakyCartAdd } from "./detectors/sneaky-cart";
+import { detectBaitSelling } from "./detectors/bait-selling";
+import { detectMisdirectedHierarchy } from "./detectors/misdirected-hierarchy";
+import { detectPriceComparison } from "./detectors/price-comparison";
+import type { FirstPriceExposure } from "./price-ledger";
 import type { Stage } from "./demo";
 
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -20,6 +24,11 @@ export type DecisionControl = {
   bounds: Bounds;
   selected?: boolean;
   href?: string;
+  color?: string;
+  backgroundColor?: string;
+  opacity?: number;
+  tabIndex?: number;
+  group?: string;
 };
 export type Snapshot = {
   /** Stable reference used by findings, review payloads, and rescan diffs. */
@@ -80,20 +89,29 @@ export function evidenceIds(snapshots: Snapshot[]) {
   return snapshots.map((snapshot) => snapshot.evidenceId ?? `evidence:${snapshot.stage}`);
 }
 
-export function detect([product, ...later]: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = []): Finding[] {
+export function detect([product, ...later]: Snapshot[], priorDisclosures: PriorFeeDisclosure[] = [], interactions: InteractionEvidence[] = [], firstPriceExposure?: FirstPriceExposure): Finding[] {
   if (!product) return [];
   const findings = [
-    ...[product, ...later].flatMap((snapshot) => detectPreselection(snapshot)),
+    ...[product, ...later].flatMap((snapshot) => detectPreselection(snapshot, interactions)),
     ...detectDripPricing(product, later, priorDisclosures),
     ...later.flatMap((snapshot) => detectSneakyCartAdd(snapshot)),
+    ...detectBaitSelling(firstPriceExposure, [product, ...later]),
+    ...[product, ...later].filter((snapshot) => snapshot.stage === "checkout").flatMap((snapshot) => detectMisdirectedHierarchy(snapshot)),
+    ...detectPriceComparison([product, ...later]),
   ];
-  // A wording signal can persist across product/cart/checkout snapshots. Keep
-  // the first occurrence as the canonical finding so reports do not show the
-  // same review item three times for one purchase flow.
-  const seen = new Set<Finding["type"]>();
-  return findings.filter((finding) => {
-    if (seen.has(finding.type)) return false;
-    seen.add(finding.type);
-    return true;
-  });
+  // Show each rule once while retaining evidence from every observed stage.
+  const byType = new Map<Finding["type"], Finding>();
+  for (const finding of findings) {
+    const previous = byType.get(finding.type);
+    if (!previous) { byType.set(finding.type, finding); continue; }
+    byType.set(finding.type, {
+      ...previous,
+      status: previous.status === "SUSPECTED" || finding.status === "SUSPECTED" ? "SUSPECTED" : "REVIEW_NEEDED",
+      reason: [...new Set([previous.reason, finding.reason])].join(" · "),
+      evidence: [...previous.evidence, ...finding.evidence].filter((item, index, items) =>
+        items.findIndex((candidate) => (candidate.evidenceId ?? candidate.stage) === (item.evidenceId ?? item.stage)) === index),
+      evidenceIds: [...new Set([...(previous.evidenceIds ?? evidenceIds(previous.evidence)), ...(finding.evidenceIds ?? evidenceIds(finding.evidence))])],
+    });
+  }
+  return [...byType.values()];
 }

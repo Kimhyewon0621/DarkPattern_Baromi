@@ -85,6 +85,7 @@ export async function runAiReviewJob(id: string) {
     const report = JSON.parse(await readFile(job.scan.reportPath, "utf8")) as {
       reviewCandidates?: Candidate[];
       snapshots?: Evidence[];
+      interactions?: import("./rules").InteractionEvidence[];
       siteCrawl?: { pages?: import("./site-crawler").CrawledSitePage[] };
       surfaceObservations?: import("./purchase-journey").SurfaceObservation[];
     };

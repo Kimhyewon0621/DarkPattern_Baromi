@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { decryptCredentials, encryptCredentials } from "../src/credential-vault";
 import { buildAiCandidatePayload, restoreAiCandidateIds, toAiProviderCandidates } from "../src/ai-review-payload";
+import { collectRuleReviewCandidates } from "../src/review-candidates";
 
 test("테스트 계정은 암호화된 일회성 값으로만 보관한다", () => {
   process.env.BAROMI_CREDENTIAL_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -57,6 +58,21 @@ test("AI 후보 payload는 크롤링·표면 근거를 연결하고 URL 쿼리�
   expect(payload[0].text).not.toContain("test@example.com");
   expect(payload[0].evidence[0].selectedControls).toContain("VIP 자동결제 동의");
   expect(payload[1].evidence[0]).toMatchObject({ source: "surface_observation", url: "https://shop.test/login", text: "로그인 [이메일 가림]" });
+});
+
+test("AI에 전달하는 크롤링 증거는 후보의 관찰 사실과 관련된 문구로 좁힌다", () => {
+  const page = {
+    evidenceId: "crawl:product", url: "https://shop.test/product", discoveredFrom: null, depth: 1, statePath: [], status: 200, outcome: "OBSERVED" as const,
+    title: "상품", text: "무료 배송\n남은 시간 04:45\n고객센터 운영 시간", linksFound: 0, controlsFound: [], productCardsFound: [],
+    domText: ["무료 배송", "남은 시간 04:45", "고객센터 운영 시간"].map((value) => ({ tag: "p", text: value, visible: true, fontSize: "14px", color: "black", opacity: "1", bounds: { x: 0, y: 0, width: 100, height: 20 } })),
+    interactives: [], formsFound: [], elementCount: 3, hiddenTextElementCount: 0, outgoingLinks: [], bodyTextLength: 35, anchorCount: 0, interactiveCount: 0, capturedAt: "2026-11-15T00:00:00Z",
+  };
+  const payload = buildAiCandidatePayload({
+    reviewCandidates: [{ id: "urgency", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "URGENCY_SCARCITY", text: "긴박감 검토", reason: "맥락 확인", observedFacts: ["남은 시간 04:45"], evidenceIds: [page.evidenceId] }],
+    siteCrawl: { pages: [page] },
+  });
+  expect(payload[0].evidence[0].text).toBe("남은 시간 04:45");
+  expect(payload[0].evidence[0].matchingVisualFacts?.map(({ text }) => text)).toEqual(["남은 시간 04:45"]);
 });
 
 test("AI 공급자에는 내부 증거 ID를 보내지 않고 응답 후보를 원래 보고서에 연결한다", () => {
@@ -512,13 +528,13 @@ test("선택 옵션은 라벨 문구가 아닌 구조화된 양수 금액으로 
   expect(detect([product])).toEqual([expect.objectContaining({ type: "PRESELECTION", status: "SUSPECTED", evidenceIds: ["gift-product"] })]);
 });
 
-test("선택된 동의 문구는 고정 키워드만으로 사전선택 위반 판정을 만들지 않는다", async () => {
+test("실제 체크된 자동 갱신 동의는 사전선택 근거로 판정하고 원문도 보존한다", async () => {
   const { collectReviewCandidates } = await import("../src/review-candidates");
   const product = {
     stage: "product" as const, url: "https://shop.test/p/1", screenshot: "", priceLines: [], textLines: [], fees: [], options: [],
     precheckedSignals: [{ label: "VIP 멤버십 자동 연장 결제 동의", bounds: { x: 0, y: 0, width: 10, height: 10 } }],
   };
-  expect(detect([product])).toEqual([]);
+  expect(detect([product])).toEqual([expect.objectContaining({ type: "PRESELECTION", status: "SUSPECTED" })]);
   expect(collectReviewCandidates([product])[0].text).toContain("VIP 멤버십 자동 연장 결제 동의");
 });
 
@@ -1114,11 +1130,12 @@ test("관련 화면을 수집한 맥락형 유형은 해당 유형이 고정된 
     screenshot: "product.png", priceLines: ["정가 100,000원", "판매가 50,000원"], textLines: ["남은 시간 04:45"], options: [], fees: [],
   };
   const candidates = collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] });
-  expect(candidates.map(({ ruleType }) => ruleType)).toEqual(expect.arrayContaining(["URGENCY_SCARCITY", "FALSE_DISCOUNT", "HIDDEN_INFO"]));
+  expect(candidates.map(({ ruleType }) => ruleType)).toEqual(expect.arrayContaining(["URGENCY_SCARCITY", "FALSE_DISCOUNT"]));
   const coverage = buildRuleCoverage({ findings: [], snapshots: [product], reviewCandidates: candidates });
   expect(coverage.URGENCY_SCARCITY).toMatchObject({ status: "REVIEW_NEEDED", decisionMode: "AI_CONTEXT", evidenceIds: ["evidence:product"] });
   expect(coverage.FALSE_DISCOUNT.status).toBe("REVIEW_NEEDED");
-  expect(coverage.HIDDEN_SUBSCRIPTION).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] });
+  expect(coverage.HIDDEN_SUBSCRIPTION.status).toBe("NOT_TESTED");
+  expect(coverage.HIDDEN_INFO.status).toBe("NOT_TESTED");
   expect(coverage.PRESELECTION.decisionMode).toBe("BASIC_ENGINE");
 });
 
@@ -1129,20 +1146,70 @@ test("관련 화면 증거가 없으면 맥락형 AI 후보를 만들지 않고 
   expect(buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates }).URGENCY_SCARCITY.status).toBe("NOT_TESTED");
 });
 
+test("깨끗한 가격·선택 화면만으로 맥락형 AI 검토 후보를 만들지 않는다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const snapshots = [
+    { evidenceId: "clean:product", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", priceLines: ["판매가 18,000원"], textLines: ["무료 배송"], options: [], fees: [] },
+    { evidenceId: "clean:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png", priceLines: ["총액 18,000원"], textLines: [], options: [], fees: [], decisionControls: [] },
+  ];
+  const candidates = collectRuleReviewCandidates({ snapshots, surfaces: [], crawlPages: [] });
+  expect(candidates).toEqual([]);
+  const coverage = buildRuleCoverage({ findings: [], snapshots, reviewCandidates: candidates });
+  expect(coverage.URGENCY_SCARCITY.status).toBe("NOT_TESTED");
+});
+
+test("구매 단계 밖에서 발견한 카운트다운도 유형이 지정된 AI 후보로 연결한다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const page = {
+    evidenceId: "crawl:landing", url: "https://shop.example.com/", outcome: "OBSERVED" as const,
+    title: "쇼핑몰", text: "오늘 특가 종료까지 04:45\n무료 배송", interactives: [],
+    discoveredFrom: null, depth: 0, statePath: [], status: 200, linksFound: 0, controlsFound: [],
+    productCardsFound: [], domText: [], formsFound: [], elementCount: 0, hiddenTextElementCount: 0,
+    outgoingLinks: [], bodyTextLength: 30, anchorCount: 0, interactiveCount: 0, capturedAt: "2026-11-15T00:00:00Z",
+  } as import("../src/site-crawler").CrawledSitePage;
+  const candidates = collectRuleReviewCandidates({ snapshots: [], surfaces: [], crawlPages: [page] });
+  expect(candidates).toEqual([expect.objectContaining({ ruleType: "URGENCY_SCARCITY", evidenceIds: ["crawl:landing"], observedFacts: ["오늘 특가 종료까지 04:45"] })]);
+});
+
+test("거부 직후 나타난 문구와 선택 결과를 AI 검토 근거로 함께 전달한다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const checkout = {
+    evidenceId: "checkout:1", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [], decisionControls: [],
+  };
+  const interaction = {
+    id: "interaction:decline", stage: "checkout" as const, kind: "PAID_OPTION_TOGGLE" as const,
+    capturedAt: "2026-11-15T00:00:00Z", controlLabel: "거절", beforeSelected: true, afterSelected: false,
+    outcome: "OBSERVED" as const, revealedText: ["아니오, 손해를 감수하겠습니다"],
+  };
+  const candidates = collectRuleReviewCandidates({ snapshots: [checkout], surfaces: [], crawlPages: [], interactions: [interaction] });
+  const payload = buildAiCandidatePayload({ snapshots: [checkout], interactions: [interaction], reviewCandidates: candidates });
+  const confirm = payload.find(({ ruleType }) => ruleType === "CONFIRM_SHAMING");
+  expect(confirm?.evidenceIds).toContain("interaction:decline");
+  expect(confirm?.evidence).toEqual(expect.arrayContaining([expect.objectContaining({
+    source: "interaction", interaction: expect.objectContaining({ beforeSelected: true, afterSelected: false, revealedText: ["아니오, 손해를 감수하겠습니다"] }),
+  })]));
+});
+
 test("맥락형 8개 규칙만 유형을 고정해 AI payload로 전달한다", async () => {
   const { collectRuleReviewCandidates } = await import("../src/review-candidates");
   const { buildAiCandidatePayload } = await import("../src/ai-review-payload");
   const checkout = {
     evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
-    screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [],
+    screenshot: "checkout.png", priceLines: [], textLines: ["추가 비용은 결제 단계에서 확인", "무료 체험 후 자동 갱신"], options: [], fees: [],
+    decisionControls: [
+      { label: "아니오, 손해를 감수하겠습니다", kind: "BUTTON" as const, bounds: { x: 0, y: 0, width: 100, height: 30 } },
+      { label: "광고 수신 동의", kind: "CHECKBOX" as const, bounds: { x: 0, y: 40, width: 100, height: 30 }, selected: true },
+    ],
   };
   const product = {
     evidenceId: "evidence:product", stage: "product" as const, url: "https://shop.example.com/product",
-    screenshot: "product.png", priceLines: [], textLines: [], options: [], fees: [],
+    screenshot: "product.png", priceLines: ["정가 100,000원", "판매가 50,000원"], textLines: ["남은 시간 04:45"], options: [], fees: [],
   };
   const observations = ["RECOMMENDATION", "SUBSCRIPTION"].map((kind) => ({
     evidenceId: `surface:${kind.toLowerCase()}`, kind: kind as "RECOMMENDATION" | "SUBSCRIPTION",
-    url: `https://shop.example.com/${kind.toLowerCase()}`, status: 200, title: kind, text: `${kind} 관찰`, outcome: "OBSERVED" as const,
+    url: `https://shop.example.com/${kind.toLowerCase()}`, status: 200, title: kind,
+    text: kind === "RECOMMENDATION" ? "인기 추천 광고 상품과 후기" : "구독 체험 후 매월 자동 갱신", outcome: "OBSERVED" as const,
   }));
   const snapshots = [product, checkout];
   const candidates = collectRuleReviewCandidates({ snapshots, surfaces: observations, crawlPages: [] });
@@ -1193,14 +1260,121 @@ test("주문서에서 처음 나타난 여러 필수 비용을 하나의 완전�
   expect(findings[0].reason).toContain("배송비");
 });
 
+test("조작 전 선택된 광고 동의는 금액이 없어도 사전 선택 근거로 남긴다", () => {
+  const bounds = { x: 10, y: 20, width: 180, height: 24 };
+  const product = {
+    evidenceId: "product:marketing-consent", stage: "product" as const,
+    url: "https://shop.example.com/product", screenshot: "product.png",
+    priceLines: [], options: [], fees: [], precheckedSignals: [{ label: "광고성 정보 수신 동의", bounds }],
+  };
+  expect(detect([product])).toEqual([expect.objectContaining({
+    type: "PRESELECTION", status: "SUSPECTED", evidenceIds: ["product:marketing-consent"], elementBounds: bounds,
+  })]);
+});
+
+test("상품과 주문서에서 발견한 사전 선택 근거를 한 항목에 모두 보존한다", () => {
+  const bounds = { x: 0, y: 0, width: 100, height: 20 };
+  const product = { evidenceId: "product:option", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", priceLines: [], fees: [], options: [{ label: "포장", won: 2000, selected: true, bounds }] };
+  const checkout = { evidenceId: "checkout:consent", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png", priceLines: [], fees: [], options: [], precheckedSignals: [{ label: "광고성 정보 수신 동의", bounds }] };
+  expect(detect([product, checkout])).toEqual([expect.objectContaining({
+    type: "PRESELECTION", evidenceIds: ["product:option", "checkout:consent"],
+  })]);
+});
+
+test("로그인 전 화면의 비필수 동의 초기 선택만 사전 선택으로 판정한다", async () => {
+  const { detectInitialConsentPreselection } = await import("../src/detectors/preselection");
+  const page = {
+    evidenceId: "site-page:pre-auth", outcome: "OBSERVED", statePath: ["로그인 화면 (인증 전)"],
+    interactives: [
+      { label: "광고성 정보 수신 동의", type: "checkbox", visible: true, selected: true },
+      { label: "이용약관 동의", type: "checkbox", visible: true, selected: true },
+    ],
+  } as unknown as import("../src/site-crawler").CrawledSitePage;
+  expect(detectInitialConsentPreselection([page])).toEqual([expect.objectContaining({
+    type: "PRESELECTION", status: "SUSPECTED", evidenceIds: ["site-page:pre-auth"],
+  })]);
+  expect(detectInitialConsentPreselection([{ ...page, statePath: ["로그인 후 화면"] }])).toEqual([]);
+  expect(detectInitialConsentPreselection([{ ...page, interactives: [{ ...page.interactives[0], selected: false }] }])).toEqual([]);
+});
+
+test("유인 판매는 같은 상품의 구매 불가와 대체 상품 제안을 함께 확인한다", () => {
+  const listing = {
+    status: "OBSERVED" as const, url: "https://shop.example.com/", productUrl: "https://shop.example.com/product/1",
+    text: "상품 18,000원 구매하기", amounts: [18000], feeMentions: [], screenshot: "listing.png", capturedAt: "2026-11-15T00:00:00Z",
+  };
+  const product = {
+    evidenceId: "product:1", stage: "product" as const, url: listing.productUrl, screenshot: "product.png",
+    priceLines: ["18,000원"], textLines: ["현재 품절", "대체 상품을 확인하세요"], options: [], fees: [],
+    decisionControls: [{ kind: "LINK" as const, label: "대체 상품 보기", bounds: { x: 0, y: 0, width: 100, height: 24 } }],
+  };
+  expect(detect([product], [], [], listing)).toEqual([expect.objectContaining({
+    type: "BAIT_SELLING", status: "SUSPECTED", evidenceIds: ["price:first-exposure", "product:1"],
+  })]);
+  expect(detect([{ ...product, decisionControls: [], textLines: ["현재 품절"] }], [], [], listing)).toEqual([
+    expect.objectContaining({ type: "BAIT_SELLING", status: "REVIEW_NEEDED" }),
+  ]);
+  expect(detect([{ ...product, textLines: ["구매 가능합니다"] }], [], [], listing).some(({ type }) => type === "BAIT_SELLING")).toBe(false);
+  expect(detect([{ ...product, url: "https://shop.example.com/product/other" }], [], [], listing).some(({ type }) => type === "BAIT_SELLING")).toBe(false);
+  const checkout = { ...product, evidenceId: "checkout:1", stage: "checkout" as const, url: "https://shop.example.com/checkout", textLines: ["주문서"] };
+  const normal = buildRuleCoverage({ findings: [], snapshots: [{ ...product, textLines: ["구매 가능"] }, checkout], firstPriceExposure: listing });
+  expect(normal.BAIT_SELLING).toMatchObject({ status: "NOT_OBSERVED", evidenceIds: ["price:first-exposure", "product:1", "checkout:1"] });
+});
+
+test("같은 결정의 선택지는 면적·대비·키보드 접근을 함께 비교한다", async () => {
+  const { assessMisdirectedHierarchy } = await import("../src/detectors/misdirected-hierarchy");
+  const base = {
+    evidenceId: "checkout:choice", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [],
+  };
+  const yes = { kind: "BUTTON" as const, label: "혜택에 동의하고 계속", bounds: { x: 0, y: 0, width: 200, height: 50 }, color: "rgb(255, 255, 255)", backgroundColor: "rgb(0, 0, 0)", opacity: 1, tabIndex: 0, group: "form:0" };
+  const no = { kind: "BUTTON" as const, label: "아니오, 거절", bounds: { x: 0, y: 55, width: 200, height: 50 }, color: "rgb(0, 0, 0)", backgroundColor: "rgb(255, 255, 255)", opacity: 1, tabIndex: 0, group: "form:0" };
+  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, no] })?.status).toBe("NOT_OBSERVED");
+  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, { ...no, bounds: { ...no.bounds, width: 50, height: 20 } }] })?.status).toBe("REVIEW_NEEDED");
+  const obscured = { ...no, bounds: { ...no.bounds, width: 50, height: 20 }, opacity: 0.3, tabIndex: -1 };
+  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, obscured] })?.status).toBe("SUSPECTED");
+  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes] })).toBeNull();
+});
+
+test("온라인 가입 대비 전화 전용 해지와 직접 해지 경로를 구분한다", async () => {
+  const { assessCancellationObstruction } = await import("../src/detectors/cancellation-obstruction");
+  type Page = import("../src/site-crawler").CrawledSitePage;
+  const enrollment = { evidenceId: "page:join", url: "https://shop.example.com/signup", outcome: "OBSERVED", statePath: [],
+    formsFound: [{ method: "POST", action: "/signup" }], interactives: [{ tag: "button", label: "회원가입", visible: true, disabled: false }] } as unknown as Page;
+  const cancel = { evidenceId: "page:cancel", url: "https://shop.example.com/membership/cancel", outcome: "OBSERVED", statePath: ["마이페이지", "해지"],
+    text: "전화로만 해지 접수", formsFound: [], interactives: [] } as unknown as Page;
+  const surfaces = [
+    { evidenceId: "surface:subscription", kind: "SUBSCRIPTION" as const, url: "https://shop.example.com/membership", outcome: "OBSERVED" as const, status: 200, title: "멤버십", text: "구독 신청" },
+    { evidenceId: "surface:cancel", kind: "CANCELLATION" as const, url: cancel.url, outcome: "OBSERVED" as const, status: 200, title: "해지", text: "전화로만 해지 접수" },
+  ];
+  expect(assessCancellationObstruction(surfaces, [enrollment, cancel])?.status).toBe("SUSPECTED");
+  const online = { ...cancel, text: "해지하기", interactives: [{ tag: "button", label: "해지하기", visible: true, disabled: false }] } as Page;
+  expect(assessCancellationObstruction([{ ...surfaces[1], text: "해지하기" }, surfaces[0]], [enrollment, online])?.status).toBe("NOT_OBSERVED");
+  expect(assessCancellationObstruction(surfaces, [cancel])).toBeNull();
+});
+
+test("월 납부액과 의무 기간만 먼저 보여준 뒤 총액을 주문서에서 공개하면 가격 비교 신호로 남긴다", async () => {
+  const { assessPriceComparison } = await import("../src/detectors/price-comparison");
+  const product = { evidenceId: "product:installment", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png",
+    priceLines: ["월 9,900원"], textLines: ["12개월 약정"], options: [], fees: [] };
+  const checkout = { evidenceId: "checkout:installment", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png",
+    priceLines: ["총 결제 금액 118,800원"], textLines: [], options: [], fees: [] };
+  expect(assessPriceComparison([product, checkout])?.status).toBe("SUSPECTED");
+  expect(assessPriceComparison([product, { ...checkout, options: [{ label: "추가 보증", won: 1000, selected: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }] }])?.status).toBe("REVIEW_NEEDED");
+  expect(detect([product, checkout])).toEqual([expect.objectContaining({ type: "PRICE_COMPARISON_OBSTRUCTION", evidenceIds: ["product:installment", "checkout:installment"] })]);
+  expect(assessPriceComparison([{ ...product, textLines: [], priceLines: ["총 결제 금액 118,800원"] },
+    { ...checkout, priceLines: ["총 결제 금액 118,800원"] },
+    { ...checkout, evidenceId: "cart:one", stage: "cart" as const, cartItemCount: 1 }])?.status).toBe("NOT_OBSERVED");
+  expect(assessPriceComparison([product])?.status).toBeUndefined();
+});
+
 test("16개 유형별 상태는 증거가 없는 항목을 미발견이 아닌 미검사로 남긴다", () => {
   const snapshots = [
     { evidenceId: "evidence:product", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", priceLines: [], textLines: [], options: [], fees: [] },
     { evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [] },
   ];
   const coverage = buildRuleCoverage({ findings: [], snapshots, surfaceObservations: [] });
-  expect(coverage.PRESELECTION.status).toBe("NOT_OBSERVED");
-  expect(coverage.DRIP_PRICING.status).toBe("NOT_OBSERVED");
+  expect(coverage.PRESELECTION.status).toBe("NOT_TESTED");
+  expect(coverage.DRIP_PRICING.status).toBe("NOT_TESTED");
   expect(coverage.MISDIRECTED_HIERARCHY.status).toBe("NOT_TESTED");
   expect(coverage.CANCELLATION_OBSTRUCTION.status).toBe("NOT_TESTED");
 });
@@ -1253,7 +1427,7 @@ test("로그인 차단은 강제행동 확정이 아니라 근거가 있는 검�
   };
   const blocker = { stage: "product" as const, code: "LOGIN_REQUIRED" as const, action: "ADD_TO_CART" as const, candidateCount: 0 };
   expect(detectForcedAction(blocker, [snapshot])).toEqual([
-    expect.objectContaining({ type: "FORCED_ACTION", status: "SUSPECTED", evidenceIds: ["evidence:product"] }),
+    expect.objectContaining({ type: "FORCED_ACTION", status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] }),
   ]);
   expect(detectForcedAction({ ...blocker, code: "ACTION_NOT_FOUND" }, [snapshot])).toEqual([]);
 });
@@ -1284,7 +1458,7 @@ test("선택지 화면을 수집해도 맥락 유형은 검토로, 연결되지 
   ] });
   expect(coverage.CONFIRM_SHAMING.status).toBe("REVIEW_NEEDED");
   expect(coverage.TRICK_QUESTION.status).toBe("REVIEW_NEEDED");
-  expect(coverage.MISDIRECTED_HIERARCHY).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("판정기를 아직 연결") });
+  expect(coverage.MISDIRECTED_HIERARCHY).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("수락·거절 선택지") });
   expect(coverage.FORCED_ACTION.status).toBe("NOT_TESTED");
 });
 
@@ -1297,14 +1471,15 @@ test("보고서 판정 계약은 16개 유형에 담당 8대8과 유효 상태�
   expect(values.every(({ status }) => ["SUSPECTED", "REVIEW_NEEDED", "NOT_OBSERVED", "NOT_TESTED"].includes(status))).toBe(true);
 });
 
-test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발견으로 뭉개지 않는다", () => {
+test("표면 문구 신호는 유형별 후보를 통해 해당 영역 증거와 연결한다", () => {
   const observations = [
     { evidenceId: "surface:recommendation:1", kind: "RECOMMENDATION" as const, url: "https://shop.example.com/reviews", status: 200, title: "인기 상품", text: "스폰서 추천 상품 · 구매자 추천", outcome: "OBSERVED" as const },
     { evidenceId: "surface:catalog:1", kind: "CATALOG" as const, url: "https://shop.example.com/category", status: 200, title: "상품 목록", text: "품절 · 구매 불가", outcome: "OBSERVED" as const },
     { evidenceId: "surface:subscription:1", kind: "SUBSCRIPTION" as const, url: "https://shop.example.com/membership", status: 200, title: "멤버십", text: "정기 결제", outcome: "OBSERVED" as const },
     { evidenceId: "surface:cancellation:1", kind: "CANCELLATION" as const, url: "https://shop.example.com/cancel", status: 200, title: "해지", text: "해지 신청", outcome: "OBSERVED" as const },
   ];
-  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: observations });
+  const reviewCandidates = collectRuleReviewCandidates({ snapshots: [], surfaces: observations, crawlPages: [] });
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: observations, reviewCandidates });
   expect(coverage.DISGUISED_AD).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["surface:recommendation:1"] });
   expect(coverage.FALSE_RECOMMENDATION.status).toBe("REVIEW_NEEDED");
   expect(coverage.BAIT_SELLING).toMatchObject({ status: "NOT_TESTED", evidenceIds: ["surface:catalog:1"] });

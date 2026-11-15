@@ -18,8 +18,15 @@
       "ruleVersion": "3",
       "stage": "checkout",
       "reason": "유료 선택지가 조작 전부터 선택되어 있고 금액이 합계에 반영되었습니다.",
-      "evidenceIds": ["evidence:checkout"],
-      "elementBounds": { "x": 20, "y": 320, "width": 280, "height": 32 }
+      "evidenceIds": [
+        "evidence:checkout"
+      ],
+      "elementBounds": {
+        "x": 20,
+        "y": 320,
+        "width": 280,
+        "height": 32
+      }
     }
   ],
   "snapshots": [
@@ -29,16 +36,36 @@
       "url": "https://shop.example/checkout",
       "screenshot": "checkout.png",
       "capturedAt": "2026-11-16T00:00:00.000Z",
-      "screenshotArea": { "x": 0, "y": 0, "width": 1280, "height": 1800 },
-      "priceLines": ["상품 10,000원", "총 결제 금액 12,000원"],
-      "textLines": ["상품", "선택형 추가 서비스"],
+      "screenshotArea": {
+        "x": 0,
+        "y": 0,
+        "width": 1280,
+        "height": 1800
+      },
+      "priceLines": [
+        "상품 10,000원",
+        "총 결제 금액 12,000원"
+      ],
+      "textLines": [
+        "상품",
+        "선택형 추가 서비스"
+      ],
       "options": [
         {
           "label": "추가 서비스",
           "won": 2000,
           "selected": true,
-          "bounds": { "x": 20, "y": 320, "width": 280, "height": 32 },
-          "location": { "frame": "main", "visible": true, "source": "dom" }
+          "bounds": {
+            "x": 20,
+            "y": 320,
+            "width": 280,
+            "height": 32
+          },
+          "location": {
+            "frame": "main",
+            "visible": true,
+            "source": "dom"
+          }
         }
       ],
       "fees": [],
@@ -48,54 +75,62 @@
         {
           "label": "추가 서비스",
           "kind": "CHECKBOX",
-          "bounds": { "x": 20, "y": 320, "width": 280, "height": 32 },
-          "selected": true
+          "bounds": {
+            "x": 20,
+            "y": 320,
+            "width": 280,
+            "height": 32
+          },
+          "selected": true,
+          "color": "rgb(17, 24, 39)",
+          "backgroundColor": "rgb(255, 255, 255)",
+          "opacity": 1,
+          "tabIndex": 0,
+          "group": "form:0"
         }
       ]
     }
   ],
-  "coverage": { "product": "COVERED", "cart": "COVERED", "checkout": "COVERED" },
+  "coverage": {
+    "product": "NOT_FOUND",
+    "cart": "NOT_FOUND",
+    "checkout": "COVERED"
+  },
   "phaseResults": {
-    "product": {
-      "status": "COVERED",
-      "startedAt": "2026-11-16T00:00:00.000Z",
-      "finishedAt": "2026-11-16T00:00:01.200Z",
-      "durationMs": 1200,
-      "reason": null,
-      "evidenceIds": ["evidence:product"]
-    },
-    "surface:CATALOG": {
-      "status": "COVERED",
-      "startedAt": "2026-11-16T00:00:01.200Z",
-      "finishedAt": "2026-11-16T00:00:03.000Z",
-      "durationMs": 1800,
-      "reason": null,
-      "evidenceIds": ["crawl:page-1"]
-    },
     "site-crawl": {
-      "status": "COVERED",
+      "status": "NOT_FOUND",
       "startedAt": "2026-11-16T00:00:01.200Z",
       "finishedAt": "2026-11-16T00:00:05.200Z",
       "durationMs": 4000,
+      "reason": "별도 탐색에서 검사 가능한 내부 페이지를 찾지 못했습니다.",
+      "evidenceIds": []
+    },
+    "checkout": {
+      "status": "COVERED",
+      "startedAt": "2026-11-16T00:00:05.200Z",
+      "finishedAt": "2026-11-16T00:00:06.400Z",
+      "durationMs": 1200,
       "reason": null,
-      "evidenceIds": ["crawl:page-1"]
+      "evidenceIds": [
+        "evidence:checkout"
+      ]
     }
   },
   "surfaceObservations": [],
   "siteCrawl": {
-    "complete": true,
+    "complete": false,
     "pages": [],
     "skippedLinks": [],
     "unexploredControls": [],
     "nonNavigatingControls": [],
     "skippedControls": [],
     "pendingUrls": [],
-    "discoveredUrlCount": 1,
-    "visitedUrlCount": 1,
-    "discoveredStateCount": 1,
-    "visitedStateCount": 1,
-    "uniqueDiscoveredUrlCount": 1,
-    "uniqueVisitedUrlCount": 1,
+    "discoveredUrlCount": 0,
+    "visitedUrlCount": 0,
+    "discoveredStateCount": 0,
+    "visitedStateCount": 0,
+    "uniqueDiscoveredUrlCount": 0,
+    "uniqueVisitedUrlCount": 0,
     "productCardCount": 0,
     "failedUrlCount": 0,
     "maxDepth": 0,
@@ -103,7 +138,11 @@
     "duplicateStates": [],
     "loginReplayed": false
   },
-  "stageTimingsMs": { "product": 1200, "site-crawl": 4000, "total": 12000 },
+  "stageTimingsMs": {
+    "site-crawl": 4000,
+    "total": 12000,
+    "checkout": 1200
+  },
   "explorationMetrics": {
     "productLinksFound": 0,
     "productLinksConsidered": 0,
@@ -120,43 +159,159 @@
   "priceLedger": {
     "version": 1,
     "currency": "KRW",
-    "firstPriceExposure": { "status": "NOT_VERIFIED" },
-    "stages": []
+    "firstPriceExposure": {
+      "status": "NOT_VERIFIED"
+    },
+    "stages": [
+      {
+        "stage": "checkout",
+        "evidence": {
+          "id": "page:checkout",
+          "url": "https://shop.example/checkout",
+          "screenshot": "checkout.png",
+          "capturedAt": "2026-11-16T00:00:00.000Z"
+        },
+        "verification": "SCREEN_ONLY",
+        "displayedLines": [
+          "상품 10,000원",
+          "총 결제 금액 12,000원"
+        ],
+        "networkValues": [],
+        "options": [
+          {
+            "label": "추가 서비스",
+            "won": 2000,
+            "selected": true,
+            "bounds": {
+              "x": 20,
+              "y": 320,
+              "width": 280,
+              "height": 32
+            },
+            "location": {
+              "frame": "main",
+              "visible": true,
+              "source": "dom"
+            }
+          }
+        ],
+        "fees": []
+      }
+    ]
   },
-  "reviewCandidates": [
-    {
-      "id": "review-urgency-example",
-      "kind": "SEMANTIC_REVIEW",
-      "stage": "surface",
-      "text": "관찰된 화면 문맥",
-      "reason": "긴급성·희소성 표현의 실제 근거와 표시 맥락을 확인해야 합니다.",
-      "evidenceIds": ["crawl:page-1"],
-      "ruleType": "URGENCY_SCARCITY"
-    }
-  ],
+  "reviewCandidates": [],
   "reviewClassifications": [],
   "ruleCoverage": {
-    "PRESELECTION": { "status": "SUSPECTED", "decisionMode": "BASIC_ENGINE", "reason": "유료 선택지가 기본 선택 상태입니다.", "evidenceIds": ["evidence:checkout"] },
-    "DRIP_PRICING": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "필요한 증거를 수집하지 못했습니다: product 화면.", "evidenceIds": [] },
-    "URGENCY_SCARCITY": { "status": "REVIEW_NEEDED", "decisionMode": "AI_CONTEXT", "reason": "긴급성·희소성 표현의 실제 근거와 표시 맥락을 확인해야 합니다.", "evidenceIds": ["crawl:page-1"] },
-    "HIDDEN_INFO": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "유형 지정 검토 후보가 없습니다.", "evidenceIds": [] },
-    "FALSE_DISCOUNT": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "가격 이력 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "DISGUISED_AD": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "추천 표면 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "CONFIRM_SHAMING": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "선택 문구 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "FORCED_ACTION": { "status": "NOT_OBSERVED", "decisionMode": "BASIC_ENGINE", "reason": "비회원 상태로 주문서 화면까지 도달했고 로그인·가입 차단이 관찰되지 않았습니다.", "evidenceIds": ["evidence:checkout"] },
-    "HIDDEN_SUBSCRIPTION": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "구독 화면 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "SNEAKY_CART_ADD": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "장바구니 자동 추가 여부 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "FALSE_RECOMMENDATION": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "추천 표면 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "BAIT_SELLING": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "상품 목록과 상세 대조 증거가 부족합니다.", "evidenceIds": [] },
-    "TRICK_QUESTION": { "status": "NOT_TESTED", "decisionMode": "AI_CONTEXT", "reason": "선택 문구 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "MISDIRECTED_HIERARCHY": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "시각적 위계 비교 판정기를 연결하지 않았습니다.", "evidenceIds": [] },
-    "CANCELLATION_OBSTRUCTION": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "해지 경로 비교 증거를 확보하지 못했습니다.", "evidenceIds": [] },
-    "PRICE_COMPARISON_OBSTRUCTION": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "가격 비교 조건을 판정할 증거가 부족합니다.", "evidenceIds": [] }
+    "PRESELECTION": {
+      "status": "SUSPECTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "유료 선택지가 기본 선택 상태입니다.",
+      "evidenceIds": [
+        "evidence:checkout"
+      ]
+    },
+    "DRIP_PRICING": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "필요한 증거를 수집하지 못했습니다: product 화면.",
+      "evidenceIds": []
+    },
+    "URGENCY_SCARCITY": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "긴박감 표현이 관찰되지 않아 맥락 검토 후보가 없습니다.",
+      "evidenceIds": []
+    },
+    "HIDDEN_INFO": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "유형 지정 검토 후보가 없습니다.",
+      "evidenceIds": []
+    },
+    "FALSE_DISCOUNT": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "가격 이력 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "DISGUISED_AD": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "추천 표면 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "CONFIRM_SHAMING": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "선택 문구 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "FORCED_ACTION": {
+      "status": "NOT_OBSERVED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "비회원 상태로 주문서 화면까지 도달했고 로그인·가입 차단이 관찰되지 않았습니다.",
+      "evidenceIds": [
+        "evidence:checkout"
+      ]
+    },
+    "HIDDEN_SUBSCRIPTION": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "구독 화면 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "SNEAKY_CART_ADD": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "장바구니 자동 추가 여부 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "FALSE_RECOMMENDATION": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "추천 표면 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "BAIT_SELLING": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "상품 목록과 상세 대조 증거가 부족합니다.",
+      "evidenceIds": []
+    },
+    "TRICK_QUESTION": {
+      "status": "NOT_TESTED",
+      "decisionMode": "AI_CONTEXT",
+      "reason": "선택 문구 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "MISDIRECTED_HIERARCHY": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "수락·거절 선택지를 같은 결정군으로 짝지어 확인하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "CANCELLATION_OBSTRUCTION": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "해지 경로 비교 증거를 확보하지 못했습니다.",
+      "evidenceIds": []
+    },
+    "PRICE_COMPARISON_OBSTRUCTION": {
+      "status": "NOT_TESTED",
+      "decisionMode": "BASIC_ENGINE",
+      "reason": "가격 비교 조건을 판정할 증거가 부족합니다.",
+      "evidenceIds": []
+    }
   },
-  "summary": { "suspected": 1, "reviewNeeded": 1, "notObserved": 1, "notTested": 13 },
+  "summary": {
+    "suspected": 1,
+    "reviewNeeded": 0,
+    "notObserved": 1,
+    "notTested": 14
+  },
   "comparison": null,
   "aiEligible": false,
-  "aiReviewCandidateCount": 1,
+  "aiReviewCandidateCount": 0,
   "aiReview": null,
   "collectionFailure": null,
   "collectionFailureCode": null

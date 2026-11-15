@@ -6,6 +6,7 @@ const amounts = (lines: string[]) => new Set(lines.flatMap((line) =>
 
 export type FirstPriceExposure = {
   status: "OBSERVED";
+  evidenceId?: "price:first-exposure";
   url: string;
   productUrl: string;
   text: string;
@@ -21,7 +22,8 @@ export function buildPriceLedger(
   return {
     version: 1,
     currency: "KRW",
-    firstPriceExposure: firstPriceExposure ?? { status: "NOT_VERIFIED" as const },
+    firstPriceExposure: firstPriceExposure ? { evidenceId: "price:first-exposure" as const, ...firstPriceExposure }
+      : { status: "NOT_VERIFIED" as const },
     stages: snapshots.map((snapshot) => {
       const screenAmounts = amounts(snapshot.priceLines);
       const observed = network.filter((item) => item.stage === snapshot.stage).flatMap((item) =>

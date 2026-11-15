@@ -160,7 +160,7 @@
 
 프론트는 `findings` 개수를 16개 유형의 판정 수로 취급하지 않는다. 유형별 현황은 `ruleCoverage`와 `summary`를 사용하고, 개별 위험의 상세와 증거는 `findings` 및 `evidenceIds`로 연결한다.
 
-`FORCED_ACTION`은 로그인 차단 신호가 있으면 근거와 함께 `SUSPECTED`가 된다. 비회원 상태로 주문서까지 도달하면 해당 구매 경로에서 인증 강제 신호가 없었다고 `NOT_OBSERVED`로 기록한다. 테스트 계정으로 로그인했거나 인증 맥락이 불명확하면 비회원 경로를 검증하지 않은 것이므로 `NOT_TESTED`를 유지한다. `authContext`는 비밀번호나 계정 식별자를 포함하지 않는다.
+`FORCED_ACTION`은 구매 중 로그인 차단 화면에 도달하면 대체 비회원 경로를 아직 배제하지 못했으므로 `REVIEW_NEEDED`로 기록한다. 비회원 상태로 주문서까지 도달하면 해당 구매 경로에서 인증 강제 신호가 없었다고 `NOT_OBSERVED`로 기록한다. 테스트 계정으로 로그인했거나 인증 맥락이 불명확하면 비회원 경로를 검증하지 않은 것이므로 `NOT_TESTED`를 유지한다. `authContext`는 비밀번호나 계정 식별자를 포함하지 않는다.
 
 축약 응답 예시다. 아래 `ruleCoverage`는 한 유형만 발췌했으며, 실제 API와 전체 예시는 항상 16개 유형을 반환한다.
 
@@ -185,7 +185,7 @@
   "interactions": [],
   "priceLedger": { "version": 1, "currency": "KRW", "firstPriceExposure": { "status": "NOT_VERIFIED" }, "stages": [] },
   "ruleCoverage": { "PRESELECTION": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "...", "evidenceIds": [] } },
-  "reviewCandidates": [{ "id": "review-id", "kind": "SEMANTIC_REVIEW", "stage": "surface", "ruleType": "URGENCY_SCARCITY", "text": "관찰된 화면 문맥", "reason": "의미 검토 필요", "evidenceIds": ["evidence-id"] }],
+  "reviewCandidates": [{ "id": "review-id", "kind": "SEMANTIC_REVIEW", "stage": "surface", "ruleType": "URGENCY_SCARCITY", "text": "긴급성 표현의 실제 근거를 검토", "observedFacts": ["남은 시간 04:45"], "missingInformation": ["실제 재고 기록과 타이머 종료 후 조건 변화"], "reason": "의미 검토 필요", "evidenceIds": ["evidence-id"] }],
   "reviewClassifications": [],
   "networkPriceEvidence": [],
   "surfaceCoverage": { "AUTH": "NOT_FOUND", "SUBSCRIPTION": "NOT_FOUND", "CANCELLATION": "NOT_FOUND", "COUPON": "NOT_FOUND", "RECOMMENDATION": "NOT_FOUND", "POLICY": "NOT_FOUND", "CATALOG": "COVERED" },
@@ -205,12 +205,14 @@
 
 `AI_CONTEXT` 유형은 관련 근거가 있고 해당 유형의 후보가 생성된 경우에만 `REVIEW_NEEDED`가 된다. 화면은 있지만 후보 생성에 실패한 경우에는 이유와 증거 ID를 붙여 `NOT_TESTED`로 남긴다. `reviewCandidates`에는 사람 확인용의 유형 없는 메모도 있을 수 있지만, 유료 AI provider에는 합의된 `AI_CONTEXT` 8개 중 `ruleType`이 고정되고 실제 증거가 연결된 항목만 전달한다. `BASIC_ENGINE` 후보나 유형 없는 메모는 AI 요청 payload에서 제외한다.
 
+유형이 지정된 `reviewCandidates[]`에는 `observedFacts[]`와 `missingInformation[]`이 포함된다. AI에 전달하는 자료는 후보와 직접 관련된 화면 문구·상호작용 근거를 우선하며, 로그인 정보와 연락처는 가린다. `interactions[]`의 ID는 선택 전후 상태와 거부 직후 나타난 문구의 근거가 될 수 있다. `priceLedger.firstPriceExposure.evidenceId`는 목록에서 처음 본 가격·상품 카드 근거를 가리키며 관찰된 경우 `price:first-exposure`다. 판정 상태는 AI 결과와 별도로 유지된다.
+
 판정 담당은 다음과 같다.
 
 - `BASIC_ENGINE` (8): `PRESELECTION`, `DRIP_PRICING`, `SNEAKY_CART_ADD`, `FORCED_ACTION`, `BAIT_SELLING`, `MISDIRECTED_HIERARCHY`, `CANCELLATION_OBSTRUCTION`, `PRICE_COMPARISON_OBSTRUCTION`
 - `AI_CONTEXT` (8): `URGENCY_SCARCITY`, `HIDDEN_INFO`, `FALSE_DISCOUNT`, `DISGUISED_AD`, `CONFIRM_SHAMING`, `HIDDEN_SUBSCRIPTION`, `FALSE_RECOMMENDATION`, `TRICK_QUESTION`
 
-`decisionMode`는 판정 책임을 표현하며, 기본 엔진 유형의 개별 탐지기가 모두 구현 완료됐다는 보증은 아니다. `NOT_TESTED` 사유와 증거 범위를 함께 확인해야 한다. `phaseResults`는 각 구매 단계·별도 영역·전체 크롤링의 상태/시간/사유/증거 ID를, `siteCrawl`은 방문한 URL·화면 상태·실패·대기·안전상 미방문 경로와 페이지별 DOM/컨트롤 관찰을 담는다. `snapshots`, `interactions`, `priceLedger`, `networkPriceEvidence`, `surfaceObservations`, `explorationMetrics`, `stageTimingsMs`는 수집된 사실 원장이다.
+`decisionMode`는 판정 책임을 표현한다. 기본 엔진 8개도 필요한 비교 증거가 없으면 `NOT_TESTED`가 될 수 있으므로 사유와 증거 범위를 함께 확인해야 한다. `phaseResults`는 각 구매 단계·별도 영역·전체 크롤링의 상태/시간/사유/증거 ID를, `siteCrawl`은 방문한 URL·화면 상태·실패·대기·안전상 미방문 경로와 페이지별 DOM/컨트롤 관찰을 담는다. `snapshots`, `interactions`, `priceLedger`, `networkPriceEvidence`, `surfaceObservations`, `explorationMetrics`, `stageTimingsMs`는 수집된 사실 원장이다.
 
 다운로드는 `GET /api/v1/scans/:scanId/report?download=1`이며 `Content-Disposition: attachment` 응답을 반환한다. SQLite와 Spring 권위 모드 모두 같은 최상위 JSON 계약을 사용한다. Spring 권위 모드에서는 Spring에 저장된 보고서에 SQLite의 소유자별 플랜·AI 작업 메타데이터를 합쳐 `summary`, `aiEligible`, `aiReviewCandidateCount`, `aiReview`를 구성한다. 로컬 AI 작업 메타데이터를 찾을 수 없으면 `aiReview: null`, `aiEligible: false`를 반환한다.
 
