@@ -39,6 +39,8 @@ public class ScanController {
    if (request.reportJson() != null) {
     var days = Math.min(Math.max(retentionDays(), 1), 3650);
     scan.setReportJson(request.reportJson(), Instant.now().plusSeconds(days * 86_400L));
+    var duration = reportDuration(request.reportJson());
+    if (duration != null) scan.setDurationMs(duration);
    }
    scans.save(scan);
    return ResponseEntity.ok(statusBody(scan));
@@ -75,6 +77,14 @@ public class ScanController {
    })
    .orElseGet(() -> ResponseEntity.notFound().build());
  }
+ @Transactional @DeleteMapping("/{id}") public ResponseEntity<?> delete(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String id){
+  var scan = scans.findById(id).filter(s -> s.getShopId()!=null && shops.findByIdAndOwnerHash(s.getShopId(),ShopController.ownerHashForApi(owner)).isPresent());
+  if(scan.isEmpty()) return ResponseEntity.notFound().build();
+  if("queued".equals(scan.get().getStatus()) || "running".equals(scan.get().getStatus()))
+   return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error","진행 중인 진단은 먼저 중단해 주세요."));
+  scans.delete(scan.get());
+  return ResponseEntity.ok(Map.of("deleted",true,"scanId",id));
+ }
  @GetMapping("/shop/{shopId}") public ResponseEntity<?> listForShop(@RequestHeader("X-Baromi-Owner") String owner,@PathVariable String shopId,@RequestParam(defaultValue="50") int limit){
   if(owner.isBlank() || shops.findByIdAndOwnerHash(shopId,ShopController.ownerHashForApi(owner)).isEmpty()) return ResponseEntity.notFound().build();
   var safeLimit = Math.min(Math.max(limit, 1), 100);
@@ -84,7 +94,27 @@ public class ScanController {
  public record CreateScanRequest(String id, String shopId, String targetUrl, String executionMode, String viewport, String purchasePath) {}
  public record StatusRequest(String status, String stage, String reportJson, Map<String,Object> phaseResults) {}
  public record RecoverRequest(Instant staleBefore) {}
- private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("phaseResults",decodePhaseResults(scan.getPhaseResultsJson())); body.put("shopId",scan.getShopId()); body.put("targetUrl",scan.getTargetUrl()); body.put("executionMode",scan.getExecutionMode()); body.put("viewport",scan.getViewport()); body.put("purchasePath",scan.getPurchasePath()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); return body; }
+ private static LinkedHashMap<String,Object> statusBody(ScanEntity scan){ var body=new LinkedHashMap<String,Object>(); body.put("scanId",scan.getId()); body.put("status",scan.getStatus()); body.put("currentStage",scan.getCurrentStage()); body.put("phaseResults",decodePhaseResults(scan.getPhaseResultsJson())); body.put("shopId",scan.getShopId()); body.put("targetUrl",scan.getTargetUrl()); body.put("executionMode",scan.getExecutionMode()); body.put("viewport",scan.getViewport()); body.put("purchasePath",scan.getPurchasePath()); body.put("createdAt",scan.getCreatedAt()); body.put("updatedAt",scan.getUpdatedAt()); body.put("startedAt",scan.getStartedAt()); body.put("durationMs",scan.getDurationMs()); body.put("reportAvailable",scan.getReportJson()!=null && (scan.getReportExpiresAt()==null || scan.getReportExpiresAt().isAfter(Instant.now()))); var summary=summary(scan.getReportJson()); if(summary!=null) body.put("summary",summary); return body; }
+ private static Map<String,Object> summary(String reportJson){
+  if(reportJson==null || reportJson.isBlank()) return null;
+  try {
+   var root=JSON.readValue(reportJson,Map.class);
+   var result=new LinkedHashMap<String,Object>();
+   var findings=root.get("findings") instanceof java.util.List<?> values ? values : java.util.List.of();
+   long suspected=findings.stream().filter(item -> item instanceof Map<?,?> map && "SUSPECTED".equals(map.get("status"))).count();
+   long review=findings.stream().filter(item -> item instanceof Map<?,?> map && "REVIEW_NEEDED".equals(map.get("status"))).count();
+   var coverage=root.get("ruleCoverage") instanceof Map<?,?> value ? value : Map.of();
+   long notTested=coverage.values().stream().filter(item -> item instanceof Map<?,?> map && "NOT_TESTED".equals(map.get("status"))).count();
+   result.put("suspected",suspected); result.put("reviewNeeded",review); result.put("notTested",notTested);
+   return result;
+  } catch(JsonProcessingException invalid){ return null; }
+ }
+ private static Integer reportDuration(String reportJson){
+  try {
+   var node=JSON.readTree(reportJson).get("durationMs");
+   return node!=null && node.canConvertToInt() && node.intValue()>=0 ? node.intValue() : null;
+  } catch(JsonProcessingException invalid){ return null; }
+ }
  private static String encodePhaseResults(Map<String,Object> phases){
   if(phases==null) return null;
   try { var json=JSON.writeValueAsString(phases); if(json.length()>262_144) throw new IllegalArgumentException("단계별 진단 상태가 허용 크기를 초과했습니다."); return json; }

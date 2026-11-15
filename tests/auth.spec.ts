@@ -11,18 +11,30 @@ const jwt = (secret: string, claims: Record<string, unknown>) => {
   return `${header}.${body}.${signature}`;
 };
 
-test("Supabase Bearer JWT owner is validated without issuing a cookie", () => {
-  const previous = { secret: process.env.SUPABASE_JWT_SECRET, audience: process.env.SUPABASE_JWT_AUDIENCE };
-  process.env.SUPABASE_JWT_SECRET = "test-secret";
-  process.env.SUPABASE_JWT_AUDIENCE = "authenticated";
+test("Supabase Bearer JWT owner is verified by Supabase Auth without issuing a cookie", async () => {
+  const previous = {
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    fetch: globalThis.fetch,
+  };
+  const secret = "test-secret";
+  const validToken = jwt(secret, { sub: "user-123", exp: Math.floor(Date.now() / 1000) + 300, aud: "authenticated" });
+  process.env.NEXT_PUBLIC_SUPABASE_URL = "https://auth.example.test";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+  globalThis.fetch = async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    return headers.get("authorization") === `Bearer ${validToken}`
+      ? new Response(JSON.stringify({ id: "user-123" }), { status: 200 })
+      : new Response(JSON.stringify({ message: "Invalid token" }), { status: 401 });
+  };
   try {
-    const token = jwt("test-secret", { sub: "user-123", exp: Math.floor(Date.now() / 1000) + 300, aud: "authenticated" });
-    const request = new NextRequest("http://localhost/api/v1/shops", { headers: { authorization: `Bearer ${token}` } });
-    expect(supabaseOwner(request)).toBe("user-123");
-    const tampered = new NextRequest("http://localhost/api/v1/shops", { headers: { authorization: `Bearer ${token.slice(0, -1)}x` } });
-    expect(supabaseOwner(tampered)).toBeNull();
+    const request = new NextRequest("http://localhost/api/v1/shops", { headers: { authorization: `Bearer ${validToken}` } });
+    expect(await supabaseOwner(request)).toBe("user-123");
+    const tampered = new NextRequest("http://localhost/api/v1/shops", { headers: { authorization: `Bearer ${validToken.slice(0, -1)}x` } });
+    expect(await supabaseOwner(tampered)).toBeNull();
   } finally {
-    if (previous.secret === undefined) delete process.env.SUPABASE_JWT_SECRET; else process.env.SUPABASE_JWT_SECRET = previous.secret;
-    if (previous.audience === undefined) delete process.env.SUPABASE_JWT_AUDIENCE; else process.env.SUPABASE_JWT_AUDIENCE = previous.audience;
+    if (previous.url === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_URL; else process.env.NEXT_PUBLIC_SUPABASE_URL = previous.url;
+    if (previous.key === undefined) delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY; else process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = previous.key;
+    globalThis.fetch = previous.fetch;
   }
 });

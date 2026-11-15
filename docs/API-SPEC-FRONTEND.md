@@ -6,8 +6,9 @@
 
 - Base URL: 현재 프론트와 같은 origin의 `/api/v1`
 - 요청 본문: `Content-Type: application/json`
-- 세션: 서버가 `darkpattern-session` HttpOnly 쿠키를 발급한다. 프론트는 쿠키 값을 읽거나 직접 저장하지 않는다.
-- 세션 폐기: `DELETE /api/v1/session`이 HttpOnly 세션 쿠키를 즉시 만료시킨다.
+- 로그인: Supabase Auth 이메일/비밀번호를 사용한다. `@supabase/ssr`가 브라우저 세션을 쿠키에 저장·갱신하고, 프론트는 토큰을 직접 보관하거나 API body에 넣지 않는다.
+- API 소유자: Supabase access token을 `auth.getClaims()`로 검증한 `sub`를 상점 소유자로 사용한다. Supabase 환경변수가 설정된 경우 로그인 없이는 상점 생성·조회·진단을 할 수 없다.
+- 로그아웃: Supabase browser client의 `auth.signOut()`으로 Supabase 세션을 폐기한다. 기존 `DELETE /api/v1/session`은 마이그레이션용 `darkpattern-session` 쿠키만 만료한다.
 - 오류 형식: `{ "error": "사용자에게 표시할 메시지" }`
 - 주요 상태: `QUEUED`, `RUNNING`, `COMPLETED`, `PARTIAL`, `CANCELLED`, `FAILED`
 - 화면 단계: `product`, `cart`, `checkout`
@@ -33,10 +34,10 @@
 
 ### `GET /api/v1/shops?limit=50`
 
-현재 세션에 속한 쇼핑몰 목록을 반환한다. `limit`은 1~100으로 제한된다.
+로그인한 사용자 소유의 쇼핑몰 목록을 반환한다. `limit`은 1~100으로 제한된다. 이메일이나 비밀번호는 쇼핑몰 데이터와 함께 저장하지 않으며, 소유권은 인증된 Supabase 사용자 ID에 연결된다.
 
 ```json
-{ "limit": 50, "shops": [{ "shopId": "uuid", "url": "https://shop.example.com" }] }
+{ "limit": 50, "shops": [{ "shopId": "uuid", "url": "https://shop.example.com", "consentAt": "ISO-8601", "verifiedAt": "ISO-8601|null" }] }
 ```
 
 ### `POST /api/v1/shops`
@@ -226,15 +227,17 @@
 
 ### `GET /api/v1/shops/:shopId/scans`
 
-최근 진단 목록(최대 50개)을 반환한다. 각 항목에 `scanId`, `status`, `executionMode`, `viewport`, `purchasePath`, `createdAt`, `durationMs`, `summary`가 있다.
+해당 쇼핑몰의 최근 진단 목록(최대 50개)을 반환한다. 각 항목에 `scanId`, `status`, `executionMode`, `viewport`, `purchasePath`, `createdAt`, `durationMs`, `reportAvailable`, `summary`가 있다. `summary`는 `suspected`, `reviewNeeded`, `notTested` 개수다. 보고서가 만료되었거나 아직 생성되지 않았으면 `reportAvailable: false`다.
 
 ### `DELETE /api/v1/scans/:scanId`
 
-완료된 진단과 증거를 삭제한다. 진행 중이면 `409`.
+소유자 본인의 진단 이력과 연결된 증거를 삭제한다. 진행 중(`QUEUED`, `RUNNING`)이면 `409`를 반환한다. 성공 응답은 `{ "deleted": true, "scanId": "..." }`다. 소유자가 다르거나 없는 ID는 `404`다.
 
 ### `DELETE /api/v1/shops/:shopId`
 
-진단이 진행 중이지 않을 때 쇼핑몰과 관련 이력을 삭제한다.
+진단이 진행 중이지 않을 때 쇼핑몰과 모든 진단 이력·증거를 함께 삭제한다. 진행 중 진단이 하나라도 있으면 `409`이며 데이터는 삭제하지 않는다. 성공 응답은 `{ "deleted": true, "shopId": "...", "deletedScanCount": 2 }` 형식이다. 소유자가 다르거나 없는 ID는 `404`다.
+
+삭제는 되돌릴 수 없다. 화면에서는 확인 절차를 제공하고, 진행 중 진단은 먼저 취소·종료한 뒤 삭제해야 한다.
 
 ## 7. 유료 AI 검토
 
@@ -280,7 +283,11 @@ PostgreSQL 연결 확인. 정상 응답:
 
 ### `GET /api/v1/shops` (Spring)
 
-헤더 `X-Baromi-Owner` 필수. 응답은 Node 목록 API와 같은 `{ "limit": 50, "shops": [] }` 형식이다.
+헤더 `X-Baromi-Owner` 필수. 응답은 Node 목록 API와 같은 `{ "limit": 50, "shops": [] }` 형식이며 각 상점은 `consentAt`, `verifiedAt`도 포함한다.
+
+### `DELETE /api/v1/shops/:shopId` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 본인 소유 쇼핑몰의 진단 이력을 함께 삭제한다. 진행 중 진단이 있으면 `409`; 성공 응답은 `{ "deleted": true, "shopId": "...", "deletedScanIds": [] }`다.
 
 ### `POST /api/v1/scans` (Spring)
 
@@ -311,6 +318,12 @@ PostgreSQL 연결 확인. 정상 응답:
 
 헤더 `X-Baromi-Owner` 필수. `limit`은 1~100이다.
 
+각 항목은 `durationMs`, `reportAvailable`을 포함하며, 보고서가 저장된 경우 `summary`에 위험 신호·검토 필요·미검사 유형 수를 포함한다.
+
+### `DELETE /api/v1/scans/:scanId` (Spring)
+
+헤더 `X-Baromi-Owner` 필수. 본인 소유의 종료된 진단 이력을 삭제한다. 진행 중이면 `409`, 타인 소유거나 없는 ID면 `404`다.
+
 ### `POST /api/v1/scans/claim` (worker 전용)
 
 헤더 `X-Baromi-Worker` 필수. 큐에서 가장 오래된 `queued` 작업을 원자적으로 가져와 `running`으로 바꾼다. 작업이 없으면 `204`.
@@ -331,11 +344,11 @@ PostgreSQL 연결 확인. 정상 응답:
 
 ## 9. 프론트가 사용할 공개 API와 내부 API 구분
 
-프론트 팀은 `POST /shops`, `GET /shops`, `GET /shops/:id`, `POST /shops/:id/verify`, `POST /scans`, `GET /scans/:id`, `GET /scans/:id/findings`, `GET /scans/:id/report`, `GET /shops/:id/scans`, `POST /scans/:id/cancel`, AI 검토 API만 사용한다. `X-Baromi-Owner`, `X-Baromi-Worker`, Spring 직접 호출은 프론트 코드에 넣지 않는다.
+프론트 팀은 `POST /shops`, `GET /shops`, `GET /shops/:id`, `DELETE /shops/:id`, `POST /shops/:id/verify`, `POST /scans`, `GET /scans/:id`, `DELETE /scans/:id`, `GET /scans/:id/findings`, `GET /scans/:id/report`, `GET /shops/:id/scans`, `POST /scans/:id/cancel`, AI 검토 API만 사용한다. `X-Baromi-Owner`, `X-Baromi-Worker`, Spring 직접 호출은 프론트 코드에 넣지 않는다.
 
 ## 프론트 구현 주의
 
-1. `401` 대신 리소스가 없을 때 `404`가 반환될 수 있으므로 로그인 세션 만료 시 등록 화면으로 복귀한다.
+1. Supabase 설정이 켜진 환경에서 로그인 세션이 없거나 만료되면 `401`을 로그인 화면으로 처리한다. 로컬 Supabase 미설정 호환 모드에서는 기존 익명 세션 오류가 `404`일 수 있다.
 2. `503`은 저장소/워커 장애, `409`는 검증·상태 충돌, `429`는 호출 제한으로 표시한다.
 3. 보고서 화면은 `coverage`, `surfaceCoverage`, `summary.notTested`를 반드시 표시해 미검사와 위험 판정을 구분한다.
 4. 결제·주문 확정 버튼을 누르는 API는 제공하지 않는다. 진단 엔진은 탐색·기록만 수행한다.

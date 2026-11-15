@@ -14,6 +14,7 @@ public class ScanEntity {
  @Column(name="created_at", nullable=false) private Instant createdAt;
  @Column(name="updated_at", nullable=false) private Instant updatedAt;
  @Column(name="started_at") private Instant startedAt;
+ @Column(name="duration_ms") private Integer durationMs;
  @Column(name="report_json", columnDefinition="TEXT") private String reportJson;
  @Column(name="phase_results_json", columnDefinition="TEXT") private String phaseResultsJson;
  @Column(name="report_expires_at") private Instant reportExpiresAt;
@@ -24,6 +25,7 @@ public class ScanEntity {
  public String getCurrentStage(){return currentStage;} public void setCurrentStage(String stage){this.currentStage=stage;}
  public String getTargetUrl(){return targetUrl;} public String getExecutionMode(){return executionMode;} public String getViewport(){return viewport;} public String getPurchasePath(){return purchasePath;}
  public Instant getCreatedAt(){return createdAt;} public Instant getUpdatedAt(){return updatedAt;} public Instant getStartedAt(){return startedAt;} public void markStarted(){this.startedAt=Instant.now(); this.updatedAt=this.startedAt;}
+ public Integer getDurationMs(){return durationMs;} public void setDurationMs(Integer value){this.durationMs=value; this.updatedAt=Instant.now();}
  public String getReportJson(){return reportJson;} public Instant getReportExpiresAt(){return reportExpiresAt;}
  public String getPhaseResultsJson(){return phaseResultsJson;} public void setPhaseResultsJson(String value){this.phaseResultsJson=value; this.updatedAt=Instant.now();}
  public void setReportJson(String reportJson, Instant expiresAt){this.reportJson=reportJson; this.reportExpiresAt=expiresAt; this.updatedAt=Instant.now();}

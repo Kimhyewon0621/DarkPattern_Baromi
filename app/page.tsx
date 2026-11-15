@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { AccountControl } from "./account-control";
 import { useState } from "react";
 
 // Clean SVG Icons (Zero Emoji, Precision 1.5px / 2px Stroke)
@@ -109,19 +110,7 @@ export default function Home() {
             </nav>
 
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <Link
-                href="/login"
-                style={{
-                  fontSize: 13.5,
-                  fontWeight: 600,
-                  color: "var(--text-main)",
-                  textDecoration: "none",
-                  padding: "6px 8px",
-                  transition: "color 0.15s",
-                }}
-              >
-                로그인
-              </Link>
+              <AccountControl />
               <Link href="/report/sample" className="cs-btn-secondary">
                 샘플 리포트
               </Link>

@@ -7,5 +7,6 @@ import org.springframework.data.domain.Pageable;
 public interface ShopRepository extends JpaRepository<ShopEntity, String> {
     Optional<ShopEntity> findByIdAndOwnerHash(String id, String ownerHash);
     java.util.List<ShopEntity> findByOwnerHashOrderByConsentAtDesc(String ownerHash, Pageable pageable);
+    Optional<ShopEntity> findFirstByOwnerHashAndUrl(String ownerHash, String url);
 }
 

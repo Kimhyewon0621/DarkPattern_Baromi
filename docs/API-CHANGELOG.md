@@ -210,6 +210,25 @@
 
 ## 변경 기록 규칙
 
+### 2026-11-16 — 사용자별 쇼핑몰 보관·진단 이력·삭제
+
+- 소유권: 인증된 Supabase 사용자 ID를 기준으로 쇼핑몰을 저장하고 조회한다. 이메일·비밀번호는 쇼핑몰 레코드에 저장하지 않는다.
+- 중복 등록: 동일 소유자의 동일 URL은 기존 쇼핑몰 ID를 반환해 이중 등록을 줄인다.
+- 이력: 쇼핑몰별 최근 진단에서 상태, 실행 환경, 경로, 생성 시각, 소요 시간, 보고서 가용성, 위험/검토/미검사 요약을 제공한다.
+- 삭제: `DELETE /api/v1/scans/:scanId`로 개별 종료 진단을, `DELETE /api/v1/shops/:shopId`로 쇼핑몰과 전체 이력을 삭제한다. 진행 중 작업이 있으면 `409`; 소유자 불일치/없는 ID는 `404`다. 로컬 증거 파일도 정리한다.
+- 저장소: Spring/PostgreSQL에도 소유자 범위 삭제를 추가하고 진단 소요 시간 컬럼을 마이그레이션한다. SQLite 호환 경로와 공개 API 응답을 맞춘다.
+- API 응답 스키마 변경: 쇼핑몰 목록에 `consentAt`, `verifiedAt`; 진단 이력에 `reportAvailable`, `durationMs`, `summary.notTested`가 추가됐다.
+- 검증: 이번 변경에서는 테스트를 실행하지 않았다. Spring/PostgreSQL 및 실제 Supabase 프로젝트에 연결한 E2E는 별도 확인이 필요하다.
+
+### 2026-11-16 — Supabase Auth 웹 로그인·소유자 검증
+
+- 변경: `/login`에 이메일/비밀번호 로그인 및 계정 생성을 추가하고 `@supabase/ssr` 쿠키 세션과 Next.js `proxy.ts` 갱신 경로를 연결했다.
+- 보호 화면: 진단 생성, 진행, 보고서, 상점 이력은 Supabase 세션이 없으면 로그인으로 이동한다.
+- API 영향: Supabase access token을 `auth.getClaims()`로 검증하고 `sub`를 소유자로 사용한다. Supabase 설정이 켜진 경우 로그인 없이 상점을 만들 수 없다. 로컬 Supabase 미설정 모드는 기존 익명 세션과 호환된다.
+- 환경변수: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (선택적으로 서버 전용 `SUPABASE_URL`, `SUPABASE_ANON_KEY`). service-role 키는 사용하지 않는다.
+- API 응답 스키마 변경: 없음. `DELETE /session`은 레거시 자체 세션만 종료하며 Supabase 로그아웃은 `auth.signOut()`으로 처리한다.
+- 미검증: 실제 Supabase 프로젝트 설정이 없어 이메일 인증 설정, redirect allowlist, 로그인 후 진단 API 연결은 아직 실제 프로젝트에서 확인하지 않았다.
+
 각 항목에 다음 정보를 포함한다.
 
 - 변경일

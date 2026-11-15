@@ -145,3 +145,30 @@ export async function listSpringShopScans(shopId: string, owner: string, limit =
   const body = await response.json() as { scans?: unknown[] };
   return body.scans ?? [];
 }
+
+async function springDelete(path: string, owner: string) {
+  const base = endpoint();
+  if (!base || !owner) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
+  try {
+    const response = await fetch(`${base}${path}`, {
+      method: "DELETE", headers: { "x-baromi-owner": owner }, signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    return { status: response.status, body };
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw new Error("Spring 상태 저장소 응답 시간 초과");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function deleteSpringScan(scanId: string, owner: string) {
+  return springDelete(`/api/v1/scans/${encodeURIComponent(scanId)}`, owner);
+}
+
+export async function deleteSpringShop(shopId: string, owner: string) {
+  return springDelete(`/api/v1/shops/${encodeURIComponent(shopId)}`, owner);
+}
