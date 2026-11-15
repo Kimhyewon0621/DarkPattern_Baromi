@@ -39,6 +39,14 @@ function safeUrl(raw?: string) {
     url.password = "";
     url.search = "";
     url.hash = "";
+    url.pathname = url.pathname.split("/").map((segment) => {
+      let decoded = segment;
+      try { decoded = decodeURIComponent(segment); } catch { /* keep the encoded segment */ }
+      if (!decoded) return "";
+      if (decoded !== redact(decoded) || /^\d{6,}$/.test(decoded)
+        || /^[a-f\d]{8}-[a-f\d-]{20,}$/i.test(decoded) || /^[A-Za-z\d_-]{32,}$/.test(decoded)) return "[가림]";
+      return decoded;
+    }).join("/");
     return url.href.slice(0, 500);
   } catch { return undefined; }
 }

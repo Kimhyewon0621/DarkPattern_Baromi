@@ -34,6 +34,12 @@ test("AI 후보 payload는 개인정보를 가리고 연결된 구매 증거만 
   expect(payload[0].evidence[0].options).toHaveLength(20);
   expect(payload[0].evidence).toHaveLength(1);
   expect(payload[0].evidence[0].url).toBe("https://shop.test/p/1");
+  const pathPayload = buildAiCandidatePayload({
+    reviewCandidates: [{ id: "c2", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "URGENCY_SCARCITY", text: "타이머", reason: "검토", evidenceIds: ["e2"] }],
+    snapshots: [{ evidenceId: "e2", stage: "product", url: "https://shop.test/member/test@example.com/promo?token=secret" }],
+  });
+  expect(pathPayload[0].evidence[0].url).not.toContain("test@example.com");
+  expect(pathPayload[0].evidence[0].url).not.toContain("secret");
 });
 
 test("AI 후보 payload는 크롤링·표면 근거를 연결하고 URL 쿼리와 개인정보를 제거한다", () => {
