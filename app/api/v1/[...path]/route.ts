@@ -19,6 +19,7 @@ import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../
 import { scanStaleBefore } from "../../../../src/scan-timeout";
 import { supabaseOwner } from "../../../../src/supabase-auth";
 import { buildRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
+import { buildAiCandidatePayload } from "../../../../src/ai-review-payload";
 import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
 type Context = { params: Promise<{ path: string[] }> };
@@ -235,12 +236,12 @@ export async function POST(request: NextRequest, context: Context) {
     });
     if (!scan?.reportPath) return notFound();
     if (scan.shop?.plan !== "PREMIUM") return error("AI 정밀 분석은 유료 플랜에서 사용자가 별도로 요청할 수 있습니다.", 402);
-    const report = await getReport(scan.reportPath);
-    const candidates = ((report as unknown as { reviewCandidates?: unknown[] } | null)?.reviewCandidates ?? []);
-    if (!candidates.length) return error("AI로 추가 분석할 검토 후보가 없습니다.", 409);
     if (scan.aiReview?.status === "QUEUED" || scan.aiReview?.status === "RUNNING" || scan.aiReview?.status === "COMPLETED") {
       return Response.json({ id: scan.aiReview.id, status: scan.aiReview.status }, { status: scan.aiReview.status === "COMPLETED" ? 200 : 202 });
     }
+    const report = await getReport(scan.reportPath);
+    const candidates = buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]);
+    if (!candidates.length) return error("AI로 전달할 검토 후보와 확인 가능한 증거가 없습니다.", 409);
     const job = await db().aiReview.upsert({
       where: { scanId: id },
       create: { id: randomUUID(), scanId: id, status: "QUEUED", candidateCount: candidates.length },

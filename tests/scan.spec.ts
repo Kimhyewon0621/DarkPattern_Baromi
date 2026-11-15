@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { decryptCredentials, encryptCredentials } from "../src/credential-vault";
-import { buildAiCandidatePayload } from "../src/ai-review-payload";
+import { buildAiCandidatePayload, restoreAiCandidateIds, toAiProviderCandidates } from "../src/ai-review-payload";
 
 test("테스트 계정은 암호화된 일회성 값으로만 보관한다", () => {
   process.env.BAROMI_CREDENTIAL_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -21,17 +21,53 @@ test("AI를 호출하지 않은 진단은 비용을 0으로 계측한다", async
   expect(exceedsAiCostCap({ provider: "test", model: "test", purpose: "test", inputTokens: 0, outputTokens: 0, estimatedCostUsd: 0.2 }, "0.2")).toBe(false);
 });
 
-test("AI 후보 payload는 개인정보를 가리고 관찰 증거만 제한해 전달한다", () => {
+test("AI 후보 payload는 개인정보를 가리고 연결된 구매 증거만 제한해 전달한다", () => {
   const payload = buildAiCandidatePayload({
     reviewCandidates: [{ id: "c1", kind: "EXPLORATION_UNVERIFIED", stage: "surface", text: "문의 test@example.com", reason: "연락처 010-1234-5678", evidenceIds: ["e1", "missing"] }],
-    snapshots: [{ evidenceId: "e1", stage: "product", url: "https://shop.test/p/1", priceLines: Array.from({ length: 30 }, (_, i) => `${i}원`), options: Array.from({ length: 30 }, () => ({ label: "옵션" })), precheckedSignals: ["signal"], surfaceSignals: ["surface"] }],
+    snapshots: [{ evidenceId: "e1", stage: "product", url: "https://shop.test/p/1?token=secret", priceLines: Array.from({ length: 30 }, (_, i) => `${i}원`), options: Array.from({ length: 30 }, () => ({ label: "옵션" })), precheckedSignals: ["signal"], surfaceSignals: ["surface"] }],
   });
   expect(payload).toHaveLength(1);
   expect(payload[0].text).not.toContain("test@example.com");
   expect(payload[0].reason).not.toContain("010-1234-5678");
   expect(payload[0].evidence[0].priceLines).toHaveLength(20);
   expect(payload[0].evidence[0].options).toHaveLength(20);
-  expect(payload[0].evidence[1]).toEqual({ evidenceId: "missing" });
+  expect(payload[0].evidence).toHaveLength(1);
+  expect(payload[0].evidence[0].url).toBe("https://shop.test/p/1");
+});
+
+test("AI 후보 payload는 크롤링·표면 근거를 연결하고 URL 쿼리와 개인정보를 제거한다", () => {
+  const payload = buildAiCandidatePayload({
+    reviewCandidates: [
+      { id: "crawl", kind: "EXPLORATION_UNVERIFIED", stage: "surface", text: "04:45 특가 종료 test@example.com", reason: "타이머 문구", evidenceIds: ["crawl-1"] },
+      { id: "surface", kind: "SURFACE_FLOW", stage: "surface", text: "로그인", reason: "인증 화면", evidenceIds: ["surface-1"] },
+    ],
+    siteCrawl: { pages: [{
+      evidenceId: "crawl-1", url: "https://shop.test/promo?token=secret#top", discoveredFrom: null, depth: 1, statePath: [], status: 200, outcome: "OBSERVED",
+      title: "특가 test@example.com", text: "04:45 특가 종료\n문의 010-1234-5678", linksFound: 0, controlsFound: [], productCardsFound: [],
+      domText: [{ tag: "p", text: "04:45 특가 종료", visible: true, fontSize: "12px", color: "rgb(0,0,0)", opacity: "1", bounds: { x: 1, y: 2, width: 80, height: 20 } }],
+      interactives: [{ tag: "input", label: "VIP 자동결제 동의", role: "", type: "checkbox", visible: true, disabled: false, selected: true }], formsFound: [], elementCount: 1, hiddenTextElementCount: 0,
+      outgoingLinks: [], bodyTextLength: 40, anchorCount: 0, interactiveCount: 1, capturedAt: "2026-11-15T00:00:00Z",
+    }] },
+    surfaceObservations: [{ evidenceId: "surface-1", kind: "AUTH", url: "https://shop.test/login?email=user%40example.com", status: 200, title: "로그인", text: "로그인 test@example.com", source: "LINK", outcome: "OBSERVED" }],
+  });
+  expect(payload).toHaveLength(2);
+  expect(payload[0].evidence[0]).toMatchObject({ source: "crawl_page", url: "https://shop.test/promo", outcome: "OBSERVED" });
+  expect(payload[0].evidence[0].text).toContain("04:45 특가 종료");
+  expect(payload[0].evidence[0].text).not.toContain("010-1234-5678");
+  expect(payload[0].text).not.toContain("test@example.com");
+  expect(payload[0].evidence[0].selectedControls).toContain("VIP 자동결제 동의");
+  expect(payload[1].evidence[0]).toMatchObject({ source: "surface_observation", url: "https://shop.test/login", text: "로그인 [이메일 가림]" });
+});
+
+test("AI 공급자에는 내부 증거 ID를 보내지 않고 응답 후보를 원래 보고서에 연결한다", () => {
+  const candidates = buildAiCandidatePayload({
+    reviewCandidates: [{ id: "review:private@example.com", kind: "SURFACE_FLOW", stage: "surface", text: "로그인", reason: "검토", evidenceIds: ["surface:/member/private@example.com"] }],
+    surfaceObservations: [{ evidenceId: "surface:/member/private@example.com", kind: "AUTH", url: "https://shop.test/member", status: 200, title: "로그인", text: "로그인", outcome: "OBSERVED" }],
+  });
+  const providerCandidates = toAiProviderCandidates(candidates);
+  expect(JSON.stringify(providerCandidates)).not.toContain("private@example.com");
+  expect(providerCandidates[0]).toMatchObject({ id: "candidate-1", evidence: [{ evidenceId: "evidence-1-1" }] });
+  expect(restoreAiCandidateIds([{ candidateId: "candidate-1" }], candidates)).toEqual([{ candidateId: "review:private@example.com" }]);
 });
 import { scanDemo } from "../src/scan";
 import { paidOptionFromText } from "../src/price-text";
@@ -1177,6 +1213,13 @@ test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발
   expect(coverage.CANCELLATION_OBSTRUCTION).toMatchObject({
     status: "REVIEW_NEEDED", evidenceIds: ["surface:subscription:1", "surface:cancellation:1"],
   });
+});
+
+test("크롤링 큐가 끝났다는 이유만으로 미방문 표면 유형을 미발견 처리하지 않는다", () => {
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: [], siteCrawlComplete: true });
+  expect(coverage.DISGUISED_AD).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("RECOMMENDATION 영역") });
+  expect(coverage.HIDDEN_SUBSCRIPTION).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("SUBSCRIPTION 영역") });
+  expect(coverage.CANCELLATION_OBSTRUCTION).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("CANCELLATION 영역") });
 });
 
 test("실제 판정과 검토 신호는 유형별 상태에서 미검사보다 우선한다", () => {

@@ -32,11 +32,11 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     BAIT_SELLING: { kind: "CATALOG", pattern: /품절|재고\s*없음|판매\s*불가|구매\s*불가|sold\s*out|out\s*of\s*stock/i, reason: "목록·카테고리 영역에서 구매 불가 표현을 확인했습니다. 노출 상품의 실제 구매 가능 여부를 대조하세요." },
   };
   const covered = (requiredStages: Snapshot["stage"][], requiredSurfaces: SurfaceObservation["kind"][] = [], controlStages: Snapshot["stage"][] = []) =>
-    requiredStages.every((stage) => stages.has(stage)) && requiredSurfaces.every((kind) => observedSurfaces.has(kind) || siteCrawlComplete)
+    requiredStages.every((stage) => stages.has(stage)) && requiredSurfaces.every((kind) => observedSurfaces.has(kind))
     && controlStages.every((stage) => snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined));
   const missing = (requiredStages: Snapshot["stage"][], requiredSurfaces: SurfaceObservation["kind"][] = [], controlStages: Snapshot["stage"][] = []) => [
     ...requiredStages.filter((stage) => !stages.has(stage)).map((stage) => `${stage} 화면`),
-    ...requiredSurfaces.filter((kind) => !observedSurfaces.has(kind) && !siteCrawlComplete).map((kind) => `${kind} 별도 영역`),
+    ...requiredSurfaces.filter((kind) => !observedSurfaces.has(kind)).map((kind) => siteCrawlComplete ? `${kind} 영역의 검사 가능한 화면` : `${kind} 별도 영역`),
     ...controlStages.filter((stage) => !snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined)).map((stage) => `${stage} 선택지 구조`),
   ];
   const requirements: Record<keyof typeof legalRules, { stages: Snapshot["stage"][]; surfaces?: SurfaceObservation["kind"][]; controlStages?: Snapshot["stage"][] }> = {
