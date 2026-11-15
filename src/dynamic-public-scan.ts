@@ -328,11 +328,16 @@ export async function scanDynamicPublicShop(
       const root = await activeSurface.count() ? activeSurface : page.locator("body");
       const snapshot = await capture(page, stage, directory, root, page.url(), true);
       snapshots.push(snapshot);
-      // The checked state at every stage is preserved by capture(). Reversible
-      // price-impact probing is limited to the product surface: toggling
-      // checkout consent/subscription controls can trigger validation, replace
-      // the modal, and add seconds without improving preselection evidence.
-      if (stage === "product") interactions.push(...await observePaidOptionChanges(page, root, stage));
+      // The checked state at every stage is preserved by capture() before any
+      // reversible probing below changes it.
+      if (stage === "product" || stage === "checkout") {
+        // Checkout is probed too: a decline confirmation shown only after
+        // unchecking a preselected paid option is otherwise never observed.
+        const toggles = await observePaidOptionChanges(page, root, stage);
+        interactions.push(...toggles);
+        const revealed = toggles.flatMap(({ revealedText }) => revealedText ?? []);
+        if (revealed.length) snapshot.textLines = [...(snapshot.textLines ?? []), ...revealed];
+      }
       await onStage(snapshot);
     }, purchasePath, onSurfacePhase);
     const journey = await Promise.race([

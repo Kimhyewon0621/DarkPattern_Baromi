@@ -37,6 +37,7 @@ type ScanSummary = {
   surfaceDestinations: { kind: string; href: string; text: string }[];
   siteCrawl: { complete: boolean; loginReplayed: boolean; duplicateStates: number; visited: number; discovered: number; visitedStates: number; discoveredStates: number; uniqueVisitedUrls: number; uniqueDiscoveredUrls: number; productCards: number; failed: number; pending: string[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; skippedControls: { url: string; label: string; reason: string }[]; pages: { url: string; statePath: string[]; outcome: string; failureReason?: string; durationMs?: number; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound: string[]; productCardsFound: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactiveLabels: string[]; interactives: PageInteractiveEvidence[]; formCount: number }[] } | null;
   ruleCoverage: Record<string, { status: string; reason: string; evidenceIds: string[] }>;
+  interactions: { id: string; stage: string; kind: string; outcome: string; afterSelected?: boolean; revealedText?: string[] }[];
   notTestedReasons: Record<string, string>;
   snapshots: { stage: string; path: string }[];
   surfaceObservations: { kind: string; outcome: string; source?: string }[];
@@ -58,6 +59,7 @@ async function summarize(reportPath: string): Promise<ScanSummary> {
       pages: { url: string; statePath?: string[]; outcome: string; failureReason?: string; durationMs?: number; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound?: string[]; productCardsFound?: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactives: PageInteractiveEvidence[]; formsFound: { method: string; action: string }[] }[];
     };
     ruleCoverage?: Record<string, { status: string; reason: string; evidenceIds?: string[] }>;
+    interactions?: ScanSummary["interactions"];
     surfaceObservations?: { kind: string; outcome: string; source?: string }[];
     reviewCandidates?: { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string }[];
     findings?: { type: string; stage: string; status: string; reason: string; evidence?: { evidenceId?: string }[] }[];
@@ -98,6 +100,7 @@ async function summarize(reportPath: string): Promise<ScanSummary> {
     ruleCoverage: Object.fromEntries(Object.entries(report.ruleCoverage ?? {}).map(([type, result]) => [type, {
       status: result.status, reason: redactValidationText(result.reason, credentials), evidenceIds: result.evidenceIds ?? [],
     }])),
+    interactions: (report.interactions ?? []).map(({ id, stage, kind, outcome, afterSelected, revealedText }) => ({ id, stage, kind, outcome, afterSelected, revealedText })),
     notTestedReasons: Object.fromEntries(Object.entries(report.ruleCoverage ?? {}).filter(([, result]) => result.status === "NOT_TESTED").map(([type, result]) => [type, result.reason])),
     snapshots: (report.snapshots ?? []).map(({ stage, url }) => ({ stage, path: (() => { try { return new URL(url).pathname; } catch { return ""; } })() })),
     surfaceObservations: (report.surfaceObservations ?? []).map(({ kind, outcome, source }) => ({ kind, outcome, source })),

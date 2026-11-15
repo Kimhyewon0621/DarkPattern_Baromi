@@ -56,6 +56,8 @@ export type InteractionEvidence = {
   afterTotalWon?: number | null;
   amountDeltaWon?: number | null;
   outcome: "OBSERVED" | "NO_LIVE_CHANGE" | "NOT_APPLICABLE";
+  /** Text lines that appeared only after the control was clicked, e.g. a decline confirmation. */
+  revealedText?: string[];
 };
 export type NetworkPriceEvidence = {
   id: string;
