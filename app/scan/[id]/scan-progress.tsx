@@ -29,9 +29,13 @@ type ScanState = {
   phaseResults?: ScanPhaseResults;
 };
 
-const labels = {
-  QUEUED: "대기 중", RUNNING: "진단 중", COMPLETED: "진단 완료",
-  PARTIAL: "검증 범위 제한", FAILED: "진단 실패", CANCELLED: "진단 중단",
+const labels: Record<Status, string> = {
+  QUEUED: "대기 큐 진입",
+  RUNNING: "브라우저 탐색 진행 중",
+  COMPLETED: "사전 점검 완료",
+  PARTIAL: "검증 범위 제한 완료",
+  FAILED: "진단 실패",
+  CANCELLED: "진단 중단됨",
 };
 
 export function ScanProgress({ id }: { id: string }) {
@@ -56,7 +60,7 @@ export function ScanProgress({ id }: { id: string }) {
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [id]);
+  }, [id, router]);
 
   async function act(action: "cancel" | "retry") {
     if (!scan) return;
