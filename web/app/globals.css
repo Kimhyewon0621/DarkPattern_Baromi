@@ -1451,6 +1451,9 @@ code,
   position: absolute;
   inset: 0;
   transform-style: preserve-3d;
+  transform-origin: 50% 50%;
+  /* set from JS: the stack is measured and fitted to the panel */
+  transform: translate(var(--fit-x, 0px), var(--fit-y, 0px)) scale3d(var(--fit-s, 1), var(--fit-s, 1), var(--fit-s, 1));
 }
 .model__float {
   position: absolute;
@@ -1469,8 +1472,8 @@ code,
 }
 .model__rig {
   position: absolute;
-  left: 36%;
-  top: 52%;
+  left: 50%;
+  top: 50%;
   width: 400px;
   height: 256px;
   margin: -128px 0 0 -200px;
@@ -1808,9 +1811,6 @@ code,
   .story__step {
     min-height: 0;
     padding: 40px 0;
-  }
-  .model__scale {
-    transform: scale(0.72);
   }
   .grid-4 {
     grid-template-columns: minmax(0, 1fr);
