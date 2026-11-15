@@ -32,9 +32,13 @@ export async function isProductPage(page: Page, url: string) {
   // count only visible controls; hidden card controls must not make the page
   // look ambiguous.
   const detailActions = page.locator('button:visible, a:visible').filter({
-    hasText: /장바구니\s*담기|바로\s*구매|지금\s*즉시.*주문하기|add\s*to\s*(?:cart|bag)|buy\s*now/i,
+    hasText: /장바구니\s*담기|바로\s*구매|add\s*to\s*(?:cart|bag)|buy\s*now/i,
   });
   if (await detailActions.count() > 0) return true;
+  // Order/apply/booking CTAs (주문·신청·예약·구독…하기) also appear once per card on some listings;
+  // only a single visible order CTA identifies an opened product detail.
+  const orderActions = page.locator('button:visible, a:visible').filter({ hasText: /(?:주문|신청|예약|구독)(?!\s*(?:확정|완료))[^\n]{0,8}하기|order\s*now|book\s*now|subscribe/i });
+  if (await orderActions.count() === 1) return true;
   for (const name of [addToCart, buyNow]) {
     const actions = page.getByRole("button", { name }).or(page.getByRole("link", { name })).filter({ visible: true });
     if (await actions.count() === 1) return true;

@@ -14,13 +14,12 @@ type Input = {
   findings: Finding[];
   snapshots: Snapshot[];
   surfaceObservations?: SurfaceObservation[];
-  siteCrawlComplete?: boolean;
   reviewCandidates?: ReviewCandidate[];
 };
 
 const ids = (snapshots: Snapshot[]) => snapshots.map((item) => item.evidenceId ?? `evidence:${item.stage}`);
 
-export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], siteCrawlComplete = false, reviewCandidates = [] }: Input): RuleCoverage {
+export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], reviewCandidates = [] }: Input): RuleCoverage {
   const findingByType = new Map(findings.map((finding) => [finding.type, finding]));
   const stages = new Set(snapshots.map(({ stage }) => stage));
   const observedSurfaces = new Set(surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ kind }) => kind));
@@ -32,11 +31,11 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     BAIT_SELLING: { kind: "CATALOG", pattern: /품절|재고\s*없음|판매\s*불가|구매\s*불가|sold\s*out|out\s*of\s*stock/i, reason: "목록·카테고리 영역에서 구매 불가 표현을 확인했습니다. 노출 상품의 실제 구매 가능 여부를 대조하세요." },
   };
   const covered = (requiredStages: Snapshot["stage"][], requiredSurfaces: SurfaceObservation["kind"][] = [], controlStages: Snapshot["stage"][] = []) =>
-    requiredStages.every((stage) => stages.has(stage)) && requiredSurfaces.every((kind) => observedSurfaces.has(kind) || siteCrawlComplete)
+    requiredStages.every((stage) => stages.has(stage)) && requiredSurfaces.every((kind) => observedSurfaces.has(kind))
     && controlStages.every((stage) => snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined));
   const missing = (requiredStages: Snapshot["stage"][], requiredSurfaces: SurfaceObservation["kind"][] = [], controlStages: Snapshot["stage"][] = []) => [
     ...requiredStages.filter((stage) => !stages.has(stage)).map((stage) => `${stage} 화면`),
-    ...requiredSurfaces.filter((kind) => !observedSurfaces.has(kind) && !siteCrawlComplete).map((kind) => `${kind} 별도 영역`),
+    ...requiredSurfaces.filter((kind) => !observedSurfaces.has(kind)).map((kind) => `${kind} 별도 영역`),
     ...controlStages.filter((stage) => !snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined)).map((stage) => `${stage} 선택지 구조`),
   ];
   const requirements: Record<keyof typeof legalRules, { stages: Snapshot["stage"][]; surfaces?: SurfaceObservation["kind"][]; controlStages?: Snapshot["stage"][] }> = {
@@ -60,9 +59,12 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
 
   return Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => {
     const finding = findingByType.get(type);
+    // A finding cites one purchase-stage snapshot; crawled screens with the same
+    // signal (for example a preselected login consent) stay linked as evidence.
     if (finding) return [type, {
       status: finding.status, reason: finding.reason,
-      evidenceIds: finding.evidenceIds ?? ids(finding.evidence),
+      evidenceIds: [...new Set([...(finding.evidenceIds ?? ids(finding.evidence)),
+        ...reviewCandidates.filter((candidate) => candidate.ruleType === type).flatMap((candidate) => candidate.evidenceIds)])],
     }];
     const reviewCandidate = reviewCandidates.find((candidate) => candidate.ruleType === type);
     if (reviewCandidate) return [type, {

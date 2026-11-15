@@ -160,7 +160,13 @@ export function collectCrawlVisualCandidates(pages: CrawledSitePage[]): ReviewCa
       if (!visual) continue;
       const fontSizePx = Number.parseFloat(visual.fontSize);
       const area = visual.bounds.width * visual.bounds.height;
-      if (!(Number.isFinite(fontSizePx) && fontSizePx <= 12) && area > 700) continue;
+      // Compare with the page's other control labels: a 12px logout among 12px
+      // navigation is the site's normal scale, not a de-emphasised exit.
+      const peerLabels = new Set(page.interactives.filter((item) => item.visible).map((item) => item.label.replace(/\s+/g, " ").trim())
+        .filter((text) => text && !exitAction.test(text) && text.replace(/[\d\s\p{P}\p{S}]/gu, "").length >= 2));
+      const peerSizes = page.domText.filter((entry) => entry.visible && peerLabels.has(entry.text.replace(/\s+/g, " ").trim()))
+        .map((entry) => Number.parseFloat(entry.fontSize)).filter(Number.isFinite);
+      if (peerSizes.length ? !(fontSizePx < Math.min(...peerSizes)) : !(Number.isFinite(fontSizePx) && fontSizePx <= 12) && area > 700) continue;
       const key = `${page.url}::${label}`;
       if (seen.has(key)) continue;
       seen.add(key);

@@ -99,6 +99,52 @@ test("전체 크롤러는 사이트맵과 내부 링크를 큐가 빌 때까지 
   }
 });
 
+test("메모리 로그인 SPA는 상태마다 로그인을 재생해 인증 화면을 읽고 타이머 변화는 새 화면으로 세지 않는다", async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const secret = "fixture-only-secret";
+  await context.route("https://memory-auth.test/**", (route) => {
+    if (new URL(route.request().url()).pathname !== "/") return route.fulfill({ status: 404, body: "" });
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body: `<!doctype html><meta charset="utf-8">
+<div id="timer">마감까지 00:00</div><header id="nav"></header><main id="main"><h1>상점 첫 화면</h1><p>로그인하면 회원 전용 메뉴가 열립니다.</p></main>
+<script>
+let loggedIn = false, ticks = 0;
+setInterval(() => { ticks++; document.querySelector('#timer').textContent = '마감까지 04:' + String(59 - ticks % 60).padStart(2, '0') + ' / ' + (40 + ticks) + '명 조회중'; }, 150);
+const main = document.querySelector('#main');
+function nav() {
+  document.querySelector('#nav').innerHTML = loggedIn
+    ? '<nav><button type="button" id="my">마이페이지</button><button type="button" id="event">이벤트</button></nav>'
+    : '<nav><button type="button" id="login">로그인</button></nav>';
+  const login = document.querySelector('#login');
+  if (login) login.onclick = () => {
+    main.innerHTML = '<form id="f"><input type="email" name="user"><input type="password" name="pw"><button type="submit">로그인</button></form>';
+    document.querySelector('#f').onsubmit = (event) => { event.preventDefault(); loggedIn = true; main.innerHTML = '<h1>회원 홈</h1>'; nav(); };
+  };
+  const my = document.querySelector('#my');
+  if (my) my.onclick = () => { main.innerHTML = '<h1>마이페이지</h1><p>주문 내역: 무드등 1건</p>'; };
+  // Re-renders only the volatile ticker region; the visible screen stays the same.
+  const event = document.querySelector('#event');
+  if (event) event.onclick = () => { ticks += 7; };
+}
+nav();
+</script>` });
+  });
+  try {
+    await page.goto("https://memory-auth.test/");
+    const { crawlShopSite } = await import("../src/site-crawler");
+    const result = await crawlShopSite(page, page.url(), { username: "fixture@example.test", password: secret }, undefined, { concurrency: 1, maxPages: 20, maxDurationMs: 30_000 });
+    expect(result.loginReplayed).toBe(true);
+    const mypage = result.pages.find(({ statePath }) => statePath.at(-1) === "마이페이지");
+    expect(mypage?.statePath).toEqual(["[테스트 계정 로그인]", "마이페이지"]);
+    expect(mypage?.text).toContain("주문 내역");
+    expect(result.pages.some(({ statePath }) => statePath.at(-1) === "이벤트")).toBe(false);
+    expect(result.nonNavigatingControls.map(({ label }) => label)).toContain("이벤트");
+    expect(JSON.stringify(result)).not.toContain(secret);
+  } finally {
+    await context.close();
+  }
+});
+
 test("전체 크롤러는 아이콘 메뉴를 열고 GET 검색 결과 경로도 읽는다", async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -1037,6 +1083,12 @@ test("크롤된 작은 로그아웃 컨트롤은 확정 위반이 아니라 계�
     status: "REVIEW_NEEDED", evidenceIds: ["site-page:header"],
   }));
   expect(collectCrawlVisualCandidates([{ ...page, domText: [{ ...page.domText[0], fontSize: "16px", bounds: { ...page.domText[0].bounds, width: 100 } }] }])).toEqual([]);
+  // Same size as the shop's other navigation labels is the site's normal scale.
+  const withPeer = (logoutPx: string) => ({ ...page,
+    interactives: [...page.interactives, { tag: "a", label: "주문 내역", role: "", type: "", visible: true, disabled: false }],
+    domText: [{ ...page.domText[0], fontSize: logoutPx }, { ...page.domText[0], text: "주문 내역", fontSize: "12px" }] });
+  expect(collectCrawlVisualCandidates([withPeer("12px")])).toEqual([]);
+  expect(collectCrawlVisualCandidates([withPeer("10px")])).toHaveLength(1);
 });
 
 test("크롤한 MEGA 유형별 화면 증거가 16개 규칙 보고서의 검토 상태와 근거 ID에 연결된다", async () => {
@@ -1061,7 +1113,7 @@ test("크롤한 MEGA 유형별 화면 증거가 16개 규칙 보고서의 검토
     ],
   } as import("../src/site-crawler").CrawledSitePage;
   const candidates = collectCrawlRuleCandidates([page]);
-  const coverage = buildRuleCoverage({ findings: [], snapshots: [], siteCrawlComplete: true, reviewCandidates: candidates });
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates });
   const expected = ["URGENCY_SCARCITY", "FALSE_RECOMMENDATION", "FALSE_DISCOUNT", "HIDDEN_SUBSCRIPTION", "PRESELECTION", "DRIP_PRICING", "CONFIRM_SHAMING", "TRICK_QUESTION", "HIDDEN_INFO", "CANCELLATION_OBSTRUCTION"] as const;
   for (const type of expected) {
     expect(coverage[type], type).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["site-page:mega-checkout"] });

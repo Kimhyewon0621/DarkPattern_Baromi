@@ -132,7 +132,9 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
       for (const stage of ["product", "cart", "checkout"] as const) {
         const evidence = snapshots.filter((item: { stage: string }) => item.stage === stage);
         if (evidence.length) await recordPhase(stage, "COVERED", { evidenceIds: evidence.map((item: { evidenceId?: string }) => item.evidenceId).filter(Boolean) as string[] });
-        else if (phases[stage]?.status !== "SKIPPED") await recordPhase(stage, report.explorationBlocker?.stage === stage ? "BLOCKED" : "NOT_FOUND", { reason: report.explorationBlocker?.stage === stage ? report.explorationBlocker.code : "검사 중 이 단계의 화면에 도달하지 못했습니다." });
+        else if (phases[stage]?.status !== "SKIPPED") await recordPhase(stage, report.explorationBlocker?.stage === stage ? "BLOCKED" : "NOT_FOUND", { reason: report.explorationBlocker?.stage === stage ? report.explorationBlocker.code : stage === "cart" && report.explorationBlocker?.action === "ADD_TO_CART"
+          ? `상품 화면에서 장바구니 담기 동작을 하나로 확정하지 못했습니다(${report.explorationBlocker.code}). 주문서는 바로 주문 경로로만 확인했습니다.`
+          : "검사 중 이 단계의 화면에 도달하지 못했습니다." });
       }
       for (const surface of ["CATALOG", "AUTH", "COUPON", "RECOMMENDATION", "SUBSCRIPTION", "CANCELLATION", "POLICY"] as const) {
         if (!phases[`surface:${surface}`] || phases[`surface:${surface}`]?.status === "SKIPPED") continue;
@@ -167,7 +169,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
           reason, evidenceIds: pageEvidenceIds,
         });
       }
-      report = { ...report, phaseResults: phases, ruleCoverage: buildRuleCoverage({ ...report, siteCrawlComplete: report.siteCrawl?.complete === true }) };
+      report = { ...report, phaseResults: phases, ruleCoverage: buildRuleCoverage(report) };
       await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
       const finished = await store.scan.update({
         where: { id, status: "RUNNING", cancelRequested: false },
