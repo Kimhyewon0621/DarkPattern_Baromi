@@ -312,3 +312,22 @@ h1, h2, h3, h4, p { margin: 0; }
   .rv { opacity: 1; transform: rotate(var(--r, 0deg)); }
   .marquee-track { flex-wrap: wrap; width: auto; }
 }
+
+/* Supabase account entry */
+.auth-page{min-height:100vh;display:grid;place-items:center;padding:32px 20px;background:#f6f8ff}
+.auth-card{width:min(100%,480px);padding:40px;border:1px solid #dce3f3;border-radius:24px;background:#fff;box-shadow:0 20px 60px rgba(20,35,75,.08)}
+.auth-card>.brand{display:inline-flex;margin-bottom:28px}
+.auth-card>.brand img{width:142px;height:auto}
+.auth-card>.eyebrow{margin:0 0 10px;color:#5869d9;font-size:12px;font-weight:800;letter-spacing:.12em}
+.auth-card h1{margin:0 0 10px;color:#121a31;font-size:32px}
+.auth-card>p:not(.eyebrow){margin:0;color:#626c82;line-height:1.7}
+.auth-form{display:grid;gap:18px;margin-top:30px}
+.auth-form label{display:grid;gap:8px;color:#202a40;font-size:14px;font-weight:700}
+.auth-form input{width:100%;min-height:48px;padding:0 14px;border:1px solid #d5dced;border-radius:10px;background:#fff;color:#141d32;font:inherit}
+.auth-form input:focus{outline:3px solid rgba(83,103,255,.18);border-color:#5367ff}
+.auth-form .action{width:100%;justify-content:center}
+.auth-switch{border:0;background:transparent;color:#455be7;font:inherit;font-weight:700;cursor:pointer}
+.auth-message{margin:0;padding:12px 14px;border-radius:10px;background:#f0f3ff;color:#273b9e;line-height:1.5}
+.auth-note{margin:0;color:#737c8e;font-size:12px;line-height:1.6}
+.account-signout{border:0;background:transparent;font:inherit;cursor:pointer}
+@media(max-width:520px){.auth-card{padding:28px 22px}}

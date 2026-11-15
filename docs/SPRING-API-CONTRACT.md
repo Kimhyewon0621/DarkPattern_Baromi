@@ -1,6 +1,6 @@
 # 바로미 Spring API 계약
 
-이 문서는 프론트엔드와 탐색 워커가 Spring 백엔드와 연동할 때 사용하는 현재 계약이다. 공개 인증 계층은 아직 전환 중이므로 아래 헤더는 내부 전환용이며, 최종 서비스 인증으로 교체될 예정이다.
+이 문서는 프론트엔드 BFF와 탐색 워커가 Spring 백엔드와 연동할 때 사용하는 현재 계약이다. 브라우저는 Spring을 직접 호출하지 않는다. `X-Baromi-Owner` 값은 BFF가 검증한 로그인 사용자 ID이며 Spring은 이를 SHA-256 해시해 저장된 소유자 키와 비교한다.
 
 `GET /api/v1/health`는 프로세스 liveness를, `GET /api/v1/health/readiness`는 PostgreSQL 연결을 확인한다. readiness가 `503`이면 트래픽을 보내지 않는다.
 
@@ -16,7 +16,7 @@
 `GET /api/v1/shops?limit=50` — 소유자 범위의 최신 상점 목록. `limit`은 1~100으로 제한된다.
 
 ```json
-{ "limit": 50, "shops": [{ "shopId": "shop-id", "url": "https://shop.example" }] }
+{ "limit": 50, "shops": [{ "shopId": "shop-id", "url": "https://shop.example", "consentAt": "2026-11-16T10:00:00Z", "verifiedAt": null }] }
 ```
 
 `POST /api/v1/shops`
@@ -26,6 +26,10 @@
 ```
 
 응답: `201 { "shopId": "...", "url": "..." }`
+
+같은 소유자가 같은 URL을 다시 등록하면 기존 `shopId`를 반환한다. BFF 미러링은 전달된 `id`를 사용해 중복 생성을 막는다.
+
+`DELETE /api/v1/shops/{shopId}` — 해당 소유자의 쇼핑몰과 진단 이력을 함께 삭제한다. `queued` 또는 `running` 진단이 있으면 `409`이며 삭제하지 않는다. 성공 응답은 삭제된 진단 ID를 포함한 `{ "deleted": true, "shopId": "...", "deletedScanIds": ["..."] }`다.
 
 ## 진단 생성·조회
 
@@ -58,10 +62,14 @@
   "shopId": "shop-id",
   "limit": 50,
   "scans": [
-    { "scanId": "scan-id", "status": "running", "currentStage": "cart", "createdAt": "2026-11-14T10:00:00Z", "updatedAt": "2026-11-14T10:01:00Z", "startedAt": "2026-11-14T10:00:05Z" }
+    { "scanId": "scan-id", "status": "running", "currentStage": "cart", "createdAt": "2026-11-14T10:00:00Z", "updatedAt": "2026-11-14T10:01:00Z", "startedAt": "2026-11-14T10:00:05Z", "durationMs": null, "reportAvailable": false }
   ]
 }
 ```
+
+보고서가 생성된 진단은 `durationMs`, `reportAvailable: true`, `summary`(위험 신호·검토 필요·미검사 수)를 포함한다. 보고서 보관 기간이 끝나면 `reportAvailable`은 `false`다.
+
+`DELETE /api/v1/scans/{scanId}` — 본인 소유의 종료된 진단 이력을 삭제한다. 진행 중이면 `409`, 타인 소유거나 없는 ID면 `404`다.
 
 ## 워커 큐
 

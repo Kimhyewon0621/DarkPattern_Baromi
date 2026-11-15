@@ -14,16 +14,16 @@ import type { scanDemo } from "../../../../src/scan";
 import { fetchPublicHtml } from "../../../../src/public-html";
 import { createSiteVerification, hashToken, matchesVerification, verificationDnsPrefix, verificationFile, verificationName } from "../../../../src/site-verification";
 import { encryptCredentials } from "../../../../src/credential-vault";
-import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
+import { deleteSpringScan, deleteSpringShop, listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringShop, notifySpringScanStatus, readSpringScan, readSpringShop, springAuthoritative, springReadiness } from "../../../../src/spring-status";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
-import { supabaseOwner } from "../../../../src/supabase-auth";
+import { supabaseAuthEnabled, supabaseOwner } from "../../../../src/supabase-auth";
 import { buildRuleCoverage, summarizeRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
 import { buildAiCandidatePayload } from "../../../../src/ai-review-payload";
 import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
 type Context = { params: Promise<{ path: string[] }> };
-type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string };
+type Report = Omit<Awaited<ReturnType<typeof scanDemo>>, "scenario"> & { scenario: string; ruleCoverage?: RuleCoverage };
 const cookie = "darkpattern-session";
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const error = (message: string, status: number) => Response.json({ error: message }, { status });
@@ -53,9 +53,9 @@ const springProgress = (scan: Record<string, unknown>, status: string) => {
 };
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
-const hasInvalidBearer = (request: NextRequest) => {
+const hasInvalidBearer = async (request: NextRequest) => {
   const authorization = request.headers.get("authorization");
-  return Boolean(process.env.SUPABASE_JWT_SECRET && authorization?.startsWith("Bearer ") && !supabaseOwner(request));
+  return Boolean(authorization?.startsWith("Bearer ") && !await supabaseOwner(request));
 };
 const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: number) => {
   const address = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
@@ -158,7 +158,7 @@ async function normalizeSpringReport(raw: Record<string, unknown>, scanId: strin
 
 export async function POST(request: NextRequest, context: Context) {
   const route = (await context.params).path;
-  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
+  if (await hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
   if (request.headers.get("content-type")?.split(";")[0] !== "application/json") {
     return error("JSON 요청이 필요합니다.", 415);
   }
@@ -167,10 +167,11 @@ export async function POST(request: NextRequest, context: Context) {
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(demoOrigin()).origin) return error("동일 출처 요청이 필요합니다.", 403);
   const body = await request.json().catch(() => null);
-  const jwtOwner = supabaseOwner(request);
+  const jwtOwner = await supabaseOwner(request);
   const session = jwtOwner ?? request.cookies.get(cookie)?.value;
 
   if (route.join("/") === "shops") {
+    if (supabaseAuthEnabled() && !jwtOwner) return error("쇼핑몰을 등록하려면 Supabase 로그인이 필요합니다.", 401);
     const limited = rateLimit(request, "shops", 20, 60 * 60 * 1000);
     if (limited) return limited;
     const target = scanTarget(body?.url);
@@ -202,7 +203,7 @@ export async function POST(request: NextRequest, context: Context) {
     return response;
   }
 
-  if (!session) return notFound();
+  if (!session) return supabaseAuthEnabled() ? error("로그인이 필요합니다.", 401) : notFound();
   const ownerHash = hash(session);
   if (route[0] === "shops" && route[1] && route[2] === "verify" && route.length === 3) {
     const shop = await db().shop.findFirst({ where: { id: route[1], ownerHash } });
@@ -402,9 +403,9 @@ export async function GET(request: NextRequest, context: Context) {
       return error("데이터베이스를 사용할 수 없습니다.", 503);
     }
   }
-  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
-  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
-  if (!session) return notFound();
+  if (await hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
+  const session = await supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
+  if (!session) return supabaseAuthEnabled() ? error("로그인이 필요합니다.", 401) : notFound();
   const ownerHash = hash(session);
   if (route.join("/") === "shops") {
     const limitParam = Number(request.nextUrl.searchParams.get("limit") ?? 50);
@@ -439,14 +440,21 @@ export async function GET(request: NextRequest, context: Context) {
       where: { shopId: shop.id }, orderBy: { createdAt: "desc" }, take: 50,
       include: { findings: { select: { status: true } } },
     });
-    return Response.json(scans.map((scan) => ({
+    return Response.json(await Promise.all(scans.map(async (scan) => {
+      const report = await getReport(scan.reportPath);
+      const ruleCoverage = report?.ruleCoverage ?? ({} as RuleCoverage);
+      const notTested = Object.values(ruleCoverage).filter((item) => item.status === "NOT_TESTED").length;
+      return {
       scanId: scan.id, status: scan.status, executionMode: scan.executionMode,
       viewport: scan.viewport, purchasePath: scan.purchasePath, createdAt: scan.createdAt,
       durationMs: scan.durationMs,
       summary: {
         suspected: scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
         reviewNeeded: scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
+        notTested,
       },
+      reportAvailable: Boolean(report),
+      };
     })));
   }
   if (resource === "shops" && !action) {
@@ -599,8 +607,8 @@ export async function GET(request: NextRequest, context: Context) {
 }
 
 export async function DELETE(request: NextRequest, context: Context) {
-  if (hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
-  const session = supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
+  if (await hasInvalidBearer(request)) return error("유효하지 않은 인증 토큰입니다.", 401);
+  const session = await supabaseOwner(request) ?? request.cookies.get(cookie)?.value;
   const route = await context.params;
   if (route.path.length === 1 && route.path[0] === "session") {
     const response = NextResponse.json({ revoked: Boolean(session) });
@@ -610,25 +618,50 @@ export async function DELETE(request: NextRequest, context: Context) {
     });
     return response;
   }
-  if (!session) return notFound();
+  if (!session) return supabaseAuthEnabled() ? error("로그인이 필요합니다.", 401) : notFound();
   const ownerHash = hash(session);
   const [resource, id] = route.path;
   if (!id || route.path.length !== 2) return notFound();
   if (resource === "scans") {
     const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { id: true, status: true } });
-    if (!scan) return notFound();
-    if (["QUEUED", "RUNNING"].includes(scan.status)) return error("진행 중인 진단은 먼저 중단해 주세요.", 409);
-    await db().scan.delete({ where: { id: scan.id } });
-    await rm(evidenceDirectory(scan.id), { recursive: true, force: true }).catch(() => undefined);
-    return Response.json({ deleted: true, scanId: scan.id });
+    if (scan && ["QUEUED", "RUNNING"].includes(scan.status)) return error("진행 중인 진단은 먼저 중단해 주세요.", 409);
+    if (!scan && !springAuthoritative()) return notFound();
+    if (springAuthoritative()) {
+      try {
+        const spring = await deleteSpringScan(id, session);
+        if (!spring) return error("최종 상태 저장소에 연결할 수 없습니다.", 503);
+        if (spring.status === 404) return notFound();
+        if (spring.status === 409) return error(String(spring.body.error ?? "진행 중인 진단은 먼저 중단해 주세요."), 409);
+        if (spring.status < 200 || spring.status >= 300) return error("진단 이력을 삭제하지 못했습니다.", 503);
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
+    if (scan) await db().scan.delete({ where: { id: scan.id } });
+    await rm(evidenceDirectory(id), { recursive: true, force: true }).catch(() => undefined);
+    return Response.json({ deleted: true, scanId: id });
   }
   if (resource === "shops") {
     const shop = await db().shop.findFirst({ where: { id, ownerHash }, select: { id: true, scans: { select: { id: true, status: true } } } });
-    if (!shop) return notFound();
-    if (shop.scans.some((scan) => ["QUEUED", "RUNNING"].includes(scan.status))) return error("진행 중인 진단이 있어 상점을 삭제할 수 없습니다.", 409);
-    await db().shop.delete({ where: { id: shop.id } });
-    await Promise.all(shop.scans.map((scan) => rm(evidenceDirectory(scan.id), { recursive: true, force: true }).catch(() => undefined)));
-    return Response.json({ deleted: true, shopId: shop.id });
+    if (shop?.scans.some((scan) => ["QUEUED", "RUNNING"].includes(scan.status))) return error("진행 중인 진단이 있어 상점을 삭제할 수 없습니다.", 409);
+    if (!shop && !springAuthoritative()) return notFound();
+    let deletedScanIds = shop?.scans.map((scan) => scan.id) ?? [];
+    if (springAuthoritative()) {
+      try {
+        const spring = await deleteSpringShop(id, session);
+        if (!spring) return error("최종 상태 저장소에 연결할 수 없어 상점을 삭제하지 못했습니다.", 503);
+        if (spring.status === 404) return notFound();
+        if (spring.status === 409) return error(String(spring.body.error ?? "진행 중인 진단이 있어 상점을 삭제할 수 없습니다."), 409);
+        if (spring.status < 200 || spring.status >= 300) return error("쇼핑몰과 진단 이력을 삭제하지 못했습니다.", 503);
+        if (Array.isArray(spring.body.deletedScanIds)) deletedScanIds = [...new Set([
+          ...deletedScanIds, ...spring.body.deletedScanIds.filter((value): value is string => typeof value === "string"),
+        ])];
+      } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
+    }
+    if (shop) {
+      await db().scan.deleteMany({ where: { shopId: shop.id } });
+      await db().shop.delete({ where: { id: shop.id } });
+    }
+    await Promise.all(deletedScanIds.map((scanId) => rm(evidenceDirectory(scanId), { recursive: true, force: true }).catch(() => undefined)));
+    return Response.json({ deleted: true, shopId: id, deletedScanCount: deletedScanIds.length });
   }
   return notFound();
 }

@@ -1,31 +1,46 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import type { NextRequest } from "next/server";
 
-type Claims = { sub?: unknown; exp?: unknown; aud?: unknown; iss?: unknown };
+const config = () => ({
+  url: process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL,
+  key: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? process.env.SUPABASE_ANON_KEY,
+});
 
-const decode = (value: string) => JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Claims;
+export function supabaseAuthEnabled() {
+  const { url, key } = config();
+  return Boolean(url && key);
+}
 
-export function supabaseOwner(request: NextRequest): string | null {
-  const secret = process.env.SUPABASE_JWT_SECRET;
+/** Verify a Supabase access token with Supabase's JWKS-backed claim verifier. */
+export async function supabaseOwner(request: NextRequest): Promise<string | null> {
   const authorization = request.headers.get("authorization");
-  if (!secret || !authorization?.startsWith("Bearer ")) return null;
-  const parts = authorization.slice("Bearer ".length).trim().split(".");
-  if (parts.length !== 3) return null;
+  const token = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (authorization?.toLowerCase().startsWith("bearer ") && !token) return null;
+  const { url, key } = config();
+  if (!url || !key) return null;
+
   try {
-    const [encodedHeader, encodedClaims, encodedSignature] = parts;
-    const header = decode(encodedHeader) as Claims & { alg?: unknown };
-    const claims = decode(encodedClaims);
-    if (header.alg !== "HS256" || typeof claims.sub !== "string" || !claims.sub) return null;
-    const expected = createHmac("sha256", secret).update(`${encodedHeader}.${encodedClaims}`).digest();
-    const actual = Buffer.from(encodedSignature, "base64url");
-    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) return null;
-    if (typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000)) return null;
-    const audience = process.env.SUPABASE_JWT_AUDIENCE ?? "authenticated";
-    const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-    if (!audiences.includes(audience)) return null;
-    const issuer = process.env.SUPABASE_JWT_ISSUER;
-    if (issuer && claims.iss !== issuer) return null;
-    return claims.sub;
+    if (token) {
+      const bearerClient = createClient(url, key, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const { data, error } = await bearerClient.auth.getClaims(token);
+      return !error && typeof data?.claims?.sub === "string" && data.claims.sub ? data.claims.sub : null;
+    }
+
+    if (request.cookies.getAll().length) {
+      const cookieClient = createServerClient(url, key, {
+        cookies: {
+          getAll: () => request.cookies.getAll(),
+          setAll: () => undefined,
+        },
+      });
+      const { data, error } = await cookieClient.auth.getClaims();
+      if (!error && typeof data?.claims?.sub === "string" && data.claims.sub) return data.claims.sub;
+    }
+
+    return null;
   } catch {
     return null;
   }
