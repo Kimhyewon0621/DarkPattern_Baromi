@@ -48,14 +48,7 @@ export function ScanProgress({ id }: { id: string }) {
         if (!response.ok) throw new Error("진단 상태를 불러오지 못했습니다.");
         const next: ScanState = await response.json();
         setScan(next);
-        if (next.status === "QUEUED" || next.status === "RUNNING") {
-          timer = setTimeout(refresh, 1000);
-        } else if (next.status === "COMPLETED" || next.status === "PARTIAL") {
-          // Auto-redirect to report after brief moment
-          setTimeout(() => {
-            router.push(`/report/${id}`);
-          }, 800);
-        }
+        if (next.status === "QUEUED" || next.status === "RUNNING") timer = setTimeout(refresh, 1000);
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "조회에 실패했습니다.");
       }
@@ -160,9 +153,11 @@ export function ScanProgress({ id }: { id: string }) {
           </button>
         )}
 
-        <Link className="cs-btn-primary" href={`/report/${id}`}>
-          결과 리포트 미리보기 →
-        </Link>
+        {scan && (scan.status === "COMPLETED" || scan.status === "PARTIAL") && (
+          <Link className="cs-btn-primary" href={`/report/${id}`}>
+            진단 결과 보기
+          </Link>
+        )}
       </div>
 
       {error && (

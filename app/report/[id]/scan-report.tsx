@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { stages, stageLabels, type Stage } from "../../../src/demo";
 import { legalRules } from "../../../src/legal-rules";
@@ -155,195 +156,23 @@ export function ScanReport({ id }: { id: string }) {
                   ))}</ul>}
                 </div>
               ))}
-            </div>
-
-            {/* Full-width Ledger Table (No Card Box) */}
-            <div className="report-ledger-section">
-              <h2 className="report-findings-title">단계별 가격 변동 원장 (Price Ledger)</h2>
-              <table className="report-table-plain">
-                <thead>
-                  <tr>
-                    <th style={{ width: "25%" }}>여정 단계</th>
-                    <th style={{ width: "35%" }}>항목 내용</th>
-                    <th style={{ width: "20%" }}>상태</th>
-                    <th style={{ width: "20%", textAlign: "right" }}>누적 청구 금액</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.ledger.map((row: any, i: number) => (
-                    <tr key={i}>
-                      <td style={{ fontWeight: 600 }}>{row.stage}</td>
-                      <td>{row.item}</td>
-                      <td>
-                        <span className={row.diff > 0 ? "report-finding-tag" : "tag-live"}>
-                          {row.diff > 0 ? `+${row.diff.toLocaleString()}원 추가` : "기준 가격"}
-                        </span>
-                      </td>
-                      <td className="tabular" style={{ textAlign: "right", fontWeight: 700 }}>
-                        {row.price.toLocaleString()}원
-                      </td>
-                    </tr>
-                  ))}
-                  <tr className="sum-row">
-                    <td colSpan={3}>최종 청구 결제 금액 (기준가 대비 +5,500원 차액 발생)</td>
-                    <td className="tabular" style={{ textAlign: "right", color: "var(--rose)" }}>
-                      25,400원
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* ── Right Action Sidebar (Sticky Cluster) ── */}
-          <div className="report-action-sidebar">
-            {/* Section 1: Immediate Rescan Box */}
-            <div className="sidebar-rescan-box">
-              <div className="sidebar-rescan-title">
-                <IconRefresh /> 즉시 재검사
-              </div>
-              <div className="sidebar-rescan-desc">
-                결과가 마음에 안 드시거나 설정을 변경하셨나요? 동일한 브라우저 조건으로 즉시 다시 진단합니다.
-              </div>
-              <button
-                type="button"
-                className="sidebar-rescan-btn"
-                disabled={isRescanning}
-                onClick={handleInstantRescan}
-              >
-                {isRescanning ? "재진단 진행 중..." : "지금 즉시 재검사 실행"}
-              </button>
-            </div>
-
-            {/* Section 2: AI Deep Audit Upsell Module */}
-            <div className="sidebar-ai-box">
-              <span className="sidebar-ai-tag">
-                <IconSparkles /> AI 심층 분석
-              </span>
-              <h3 className="sidebar-ai-title">미검사 1건 정밀 점검</h3>
-              <div className="sidebar-ai-desc">
-                접근 제한이나 모호한 문맥으로 보류된 1건을 VLM AI가 화면을 직접 시각 분석하여 위험 여부를 판정합니다.
-              </div>
-              <div className="sidebar-ai-price">
-                9,900원 <span>(부가세 포함)</span>
-              </div>
-              <button
-                type="button"
-                className="sidebar-ai-btn"
-                onClick={() => setAiModalOpen(true)}
-              >
-                AI 심층 정밀 검사 시작
-              </button>
-            </div>
-
-            {/* 상점 전체 이력 바로가기 */}
-            <div style={{ background: "#ffffff", border: "1px solid var(--border-subtle)", borderRadius: 10, padding: 18 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
-                상점 전체 진단 이력
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5, marginBottom: 12 }}>
-                이 쇼핑몰의 회차별 진단 이력과 변경 내역을 대조해 보세요.
-              </div>
-              <Link
-                href={`/shop/${report.shopId}`}
-                className="cs-btn-secondary"
-                style={{ width: "100%", justifyContent: "center", fontSize: 12.5 }}
-              >
-                상점 누적 원장 보기 →
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* ── AI Audit Modal ── */}
-      {aiModalOpen && (
-        <div style={{
-          position: "fixed",
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          background: "rgba(15, 23, 42, 0.6)",
-          backdropFilter: "blur(4px)",
-          display: "grid",
-          placeItems: "center",
-          zIndex: 1000,
-          padding: 20,
-        }}>
-          <div style={{
-            background: "#ffffff",
-            borderRadius: 14,
-            maxWidth: 460,
-            width: "100%",
-            padding: 28,
-            boxShadow: "0 20px 48px rgba(0, 0, 0, 0.2)",
-          }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <span className="sidebar-ai-tag">AI 심층 정밀 분석 세션</span>
-              <button
-                type="button"
-                style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 16, color: "var(--text-muted)" }}
-                onClick={() => setAiModalOpen(false)}
-              >
-                ✕
-              </button>
-            </div>
-
-            <h3 style={{ fontSize: 18, fontWeight: 800, margin: "0 0 8px", color: "var(--text-main)" }}>
-              미검사 1건 AI 시각 정밀 진단
-            </h3>
-            <p style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6, margin: "0 0 20px" }}>
-              회원 로그인 및 프로모션 팝업의 모호한 텍스트 문맥을 최신 Vision AI가 시각적으로 판독하여 숨겨진 의도와 공정위 지침 위반 여부를 검증합니다.
-            </p>
-
-            {aiRunning ? (
-              <div style={{ padding: "24px 0", textAlign: "center" }}>
-                <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--primary)", marginBottom: 8 }}>
-                  {aiStep === 1 && "1/3. 페이지 시각 스냅샷 렌더링 중..."}
-                  {aiStep === 2 && "2/3. 공정위 심사지침 기준 VLM 모델 판독 중..."}
-                  {aiStep === 3 && "3/3. 검증 결과 리포트 병합 중..."}
-                </div>
-                <div style={{ height: 4, background: "var(--border-subtle)", borderRadius: 2, overflow: "hidden" }}>
-                  <div style={{ height: "100%", background: "var(--primary)", width: `${aiStep * 33}%`, transition: "width 0.4s ease" }} />
-                </div>
-              </div>
-            ) : (
-              <div>
-                <div style={{ background: "var(--bg-subtle)", borderRadius: 8, padding: 14, marginBottom: 20 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
-                    <span style={{ color: "var(--text-muted)" }}>검사 대상 항목</span>
-                    <strong>회원 프로모션 유도 문맥</strong>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-                    <span style={{ color: "var(--text-muted)" }}>결제 금액</span>
-                    <strong className="tabular" style={{ color: "var(--primary)" }}>9,900원</strong>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button
-                    type="button"
-                    className="cs-btn-secondary"
-                    style={{ flex: 1, justifyContent: "center" }}
-                    onClick={() => setAiModalOpen(false)}
-                  >
-                    취소
-                  </button>
-                  <button
-                    type="button"
-                    className="cs-btn-primary"
-                    style={{ flex: 1, justifyContent: "center", background: "var(--primary)" }}
-                    onClick={handleAiAudit}
-                  >
-                    결제 및 진단 시작
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+            </>
+          )}
+        </section>
       )}
-    </div>
+      <button className="action" disabled={pending} onClick={async () => {
+        setPending(true);
+        try {
+          const next = await post("scans", scanRequest(
+            report.shopId, id, report.executionMode === "DYNAMIC" ? "DYNAMIC" : "CONTEST", report.viewport, report.purchasePath,
+          ));
+          router.push("/scan/" + next.scanId);
+        } catch {
+          setError("재진단을 시작하지 못했습니다.");
+          setPending(false);
+        }
+      }}>같은 조건으로 재진단</button>
+      {error && <p role="alert">{error}</p>}
+    </>
   );
 }

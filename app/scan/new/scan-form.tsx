@@ -64,7 +64,7 @@ export function ScanForm() {
   return (
     <form className="scan-form" onSubmit={submit}>
       <label className="field">
-        쇼핑몰 또는 상품 URL
+        쇼핑몰 URL
         <input
           type="url"
           value={url}
@@ -117,26 +117,23 @@ export function ScanForm() {
       </div>
 
       {/* Mode Toggle */}
-      <div
+      <button
+        type="button"
         className="scan-mode-toggle"
+        aria-pressed={dynamic}
         onClick={() => setDynamic(!dynamic)}
-        style={{ borderLeft: dynamic ? "3px solid var(--primary)" : "1px solid var(--border-subtle)" }}
+        style={{ width: "100%", textAlign: "left", font: "inherit", background: "#fff", cursor: "pointer", borderLeft: dynamic ? "3px solid var(--primary)" : "1px solid var(--border-subtle)" }}
       >
-        <div>
-          <div className="scan-mode-info">
-            {dynamic ? "전체 구매 흐름 정밀 검사 활성화됨" : "동적 구매 흐름 정밀 점검 옵션"}
-          </div>
-          <div className="scan-mode-sub">
+        <span>
+          <span className="scan-mode-info" style={{ display: "block" }}>
+            {dynamic ? "전체 구매 흐름 검사 선택됨" : "소유 확인 후 동적 구매 흐름까지 검사"}
+          </span>
+          <span className="scan-mode-sub" style={{ display: "block" }}>
             {dynamic ? "상품 → 장바구니 → 주문서까지 브라우저 세션을 열어 점검합니다." : "소유 권한 확인 또는 테스트 계정으로 주문서 단계까지 점검"}
-          </div>
-        </div>
-        <input
-          type="checkbox"
-          checked={dynamic}
-          onChange={() => {}}
-          style={{ width: 16, height: 16, accentColor: "var(--primary)" }}
-        />
-      </div>
+          </span>
+        </span>
+        <span aria-hidden="true" style={{ width: 16, height: 16, flex: "none", borderRadius: 4, border: "1.5px solid var(--primary)", background: dynamic ? "var(--primary)" : "transparent" }} />
+      </button>
 
       {dynamic && (
         <div style={{ background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 8, padding: 16, marginBottom: 20 }}>
@@ -157,11 +154,11 @@ export function ScanForm() {
 
       <label className="scan-consent">
         <input type="checkbox" name="consent" required />
-        <span>해당 쇼핑몰에 대한 사전 점검 권한을 확인하였으며, 서비스 약관 및 자동화 검사에 동의합니다. (실제 결제는 실행되지 않습니다)</span>
+        <span>이 대상에 대한 자동 진단 권한이 있으며 검사에 동의합니다. (실제 결제는 실행되지 않습니다)</span>
       </label>
 
       <button type="submit" className="scan-submit-btn" disabled={pending}>
-        {pending ? "검사 세션 생성 중..." : "사전 점검 시작하기"}
+        {pending ? "검사 세션 생성 중..." : "진단 시작"}
       </button>
 
       {error && (

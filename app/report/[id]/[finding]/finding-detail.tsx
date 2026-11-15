@@ -7,34 +7,10 @@ import { legalRules } from "../../../../src/legal-rules";
 import type { Finding } from "../../../../src/rules";
 
 // 견본 데이터 폴백 (API 실패 또는 데모 열람 시)
-const FALLBACK_FINDING: Finding = {
-  type: "PRESELECTION",
-  status: "SUSPECTED",
-  ruleVersion: "1",
-  stage: "product",
-  reason: "소비자가 직접 선택하지 않은 유료 포장 옵션(+2,500원)이 초기 화면에서 기본으로 체크되어 있어 총 결제 예상 금액이 부당하게 증가했습니다.",
-  elementBounds: { x: 38, y: 142, width: 280, height: 38 },
-  evidenceIds: ["ev-sample-prod-01", "ev-sample-prod-02"],
-  evidence: [
-    {
-      stage: "product",
-      url: "https://sample.shop/products/1",
-      screenshot: "sample-prod-screenshot.png",
-      options: [],
-      fees: [],
-      screenshotArea: { x: 0, y: 0, width: 360, height: 480 },
-      priceLines: [
-        "기본 상품가: 19,900원",
-        "[선택옵션] 프리미엄 선물포장 (+2,500원) [기본 선택됨]",
-        "현재 계산된 합계: 22,400원",
-      ],
-    },
-  ],
-};
-
 export function FindingDetail({ id, finding }: { id: string; finding: string }) {
   const [detail, setDetail] = useState<Finding | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -47,8 +23,8 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
       })
       .catch(() => {
         if (!controller.signal.aborted) {
-          // 데모 또는 샘플 폴백
-          setDetail(FALLBACK_FINDING);
+          // Never substitute sample data for a real finding.
+          setLoadError(true);
           setLoading(false);
         }
       });
@@ -63,7 +39,16 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
     );
   }
 
-  const currentFinding = detail || FALLBACK_FINDING;
+  if (loadError || !detail) {
+    return (
+      <div role="alert" style={{ padding: "64px 0", textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>
+        발견 항목을 불러오지 못했습니다. 세션이 만료됐거나 항목이 삭제됐을 수 있습니다.{" "}
+        <Link href={`/report/${id}`}>진단 결과로 돌아가기</Link>
+      </div>
+    );
+  }
+
+  const currentFinding = detail;
   const rule = legalRules[currentFinding.type] || {
     title: "특정 옵션 사전선택",
     recommendation: "유료 부가옵션은 기본 선택값을 반드시 '선택 안 함'으로 설정하고, 소비자가 자발적으로 체크했을 때만 금액이 합산되도록 변경하세요.",
@@ -90,7 +75,7 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M19 12H5M12 19l-7-7 7-7" />
           </svg>
-          리포트 요약으로 돌아가기
+          진단 결과로 돌아가기
         </Link>
         <span style={{ color: "var(--text-sub)", fontSize: 12 }}>/</span>
         <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>발견 상세 인스펙터</span>
@@ -117,7 +102,7 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
           {currentFinding.evidenceIds?.length ? (
             <>
               <span>·</span>
-              <span>증거 수집 레코드: {currentFinding.evidenceIds.join(", ")}</span>
+              <span>근거 ID · {currentFinding.evidenceIds.join(", ")}</span>
             </>
           ) : null}
         </div>
@@ -176,22 +161,8 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
                     <img
                       src={"/api/v1/evidences/" + id + "-" + snapshot.stage}
                       onError={(e) => {
-                        // 데모 이미지 폴백
-                        (e.currentTarget as HTMLImageElement).src =
-                          "data:image/svg+xml;charset=utf-8," +
-                          encodeURIComponent(
-                            `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="420" viewBox="0 0 360 420" fill="#f8fafc">
-                              <rect width="360" height="420" fill="#f8fafc"/>
-                              <rect x="20" y="24" width="320" height="200" rx="8" fill="#e2e8f0"/>
-                              <text x="180" y="130" font-family="sans-serif" font-size="14" font-weight="bold" fill="#64748b" text-anchor="middle">상품 대표 이미지 영역</text>
-                              <rect x="20" y="240" width="180" height="18" rx="4" fill="#cbd5e1"/>
-                              <rect x="20" y="268" width="120" height="24" rx="4" fill="#94a3b8"/>
-                              <rect x="20" y="306" width="320" height="44" rx="6" fill="#fee2e2" stroke="#f87171" stroke-width="1.5"/>
-                              <text x="32" y="333" font-family="sans-serif" font-size="12" font-weight="bold" fill="#b91c1c">[V] 유료 선물포장 (+2,500원)</text>
-                              <rect x="20" y="362" width="320" height="40" rx="6" fill="#0f172a"/>
-                              <text x="180" y="387" font-family="sans-serif" font-size="13" font-weight="bold" fill="#ffffff" text-anchor="middle">22,400원 바로구매</text>
-                            </svg>`
-                          );
+                        // Show the gap honestly instead of a drawn placeholder.
+                        e.currentTarget.style.display = "none";
                       }}
                       alt={stageLabels[snapshot.stage] + " 진단 화면"}
                     />
@@ -204,6 +175,8 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
                           width: ((right - left) / area.width) * 100 + "%",
                           height: ((bottom - top) / area.height) * 100 + "%",
                         }}
+                        role="img"
+                        aria-label="위험 신호 위치"
                         title="의심 영역 바운딩 박스"
                       />
                     )}
@@ -259,7 +232,7 @@ export function FindingDetail({ id, finding }: { id: string; finding: string }) 
               rel="noopener noreferrer"
               className="finding-legal-link"
             >
-              공정거래위원회 원문 지침 열람하기
+              {rule.reference} 원문 보기
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3" />
               </svg>
