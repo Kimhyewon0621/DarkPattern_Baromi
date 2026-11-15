@@ -7,7 +7,7 @@ import { stages, type Scenario, type Stage } from "./demo";
 import { isVariantOptionLabel, mandatoryFeeFromText, paidOptionFromText } from "./price-text";
 import { detect, type Snapshot } from "./rules";
 import { observePaidOptionChanges } from "./journey-evidence";
-import { collectReviewCandidates } from "./review-candidates";
+import { collectReviewCandidates, collectRuleReviewCandidates } from "./review-candidates";
 
 export async function capture(page: Page, stage: Stage, directory: string, main: Locator, url = page.url(), fullPage = true): Promise<Snapshot> {
   await main.waitFor({ state: "visible" });
@@ -62,9 +62,9 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
       };
     }),
   );
-  const feeRows = await main.locator("p, li, tr, dd").evaluateAll((nodes) =>
+  const feeRows = await main.locator("div, p, li, tr, dd").evaluateAll((nodes) =>
     nodes.filter((node) =>
-      !node.closest("[data-fee-id]") && !node.querySelector("[data-fee-id], p, li, tr, dd") &&
+      !node.closest("[data-fee-id]") && !node.querySelector("[data-fee-id], div, p, li, tr, dd") &&
       node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
     ).map((node) => {
       const row = node as HTMLElement;
@@ -89,6 +89,8 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
   // structured fields and the price ledger.
   const bodyText = await main.innerText().catch(() => "");
   const textLines = bodyText.split(/\n+/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 300);
+  const cartCountMatch = stage === "cart" ? bodyText.match(/(?:장바구니|카트|cart|bag|basket)\s*[(:：]?\s*(\d+)\s*(?:개|items?)?\s*\)?/i) : null;
+  const cartItemCount = cartCountMatch ? Number(cartCountMatch[1]) : undefined;
   const textPrices = textLines.filter((line) =>
     /(?:[₩$£€]\s*\d[\d,.]*|\d[\d,.]*\s*원)/.test(line),
   ).slice(0, 100);
@@ -101,6 +103,22 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
     if (!/(?:마케팅|광고|정보\s*수신|자동\s*연장|자동\s*결제|멤버십|newsletter|marketing|auto.?renew)/i.test(label)) return [];
     const { x, y, width, height } = control.getBoundingClientRect();
     return [{ label, bounds: { x: x + window.scrollX, y: y + window.scrollY, width, height }, location: { frame: "main", visible: true, source: "dom" as const } }];
+  }));
+  const decisionControls = await main.locator('button:visible, a:visible, [role="button"]:visible, input[type="checkbox"]:visible, input[type="radio"]:visible, [role="checkbox"]:visible, [role="radio"]:visible').evaluateAll((nodes) => nodes.slice(0, 120).flatMap((node) => {
+    const control = node as HTMLElement;
+    const native = control instanceof HTMLInputElement;
+    const role = native ? control.type.toUpperCase() : control.matches('a') ? "LINK" : control.getAttribute("role")?.toUpperCase() ?? "BUTTON";
+    const kind: "BUTTON" | "LINK" | "CHECKBOX" | "RADIO" = role === "CHECKBOX" ? "CHECKBOX"
+      : role === "RADIO" ? "RADIO" : role === "LINK" ? "LINK" : "BUTTON";
+    const label = (native ? Array.from(control.labels ?? [], (item) => item.innerText.trim()).join(" ")
+      : control.getAttribute("aria-label") ?? control.getAttribute("title") ?? control.innerText)
+      .replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!label) return [];
+    const { x, y, width, height } = control.getBoundingClientRect();
+    const href = control instanceof HTMLAnchorElement ? control.href : undefined;
+    const selected = native ? control.checked : control.getAttribute("aria-checked") === "true";
+    return [{ label, kind, bounds: { x: x + window.scrollX, y: y + window.scrollY, width, height },
+      ...(kind === "CHECKBOX" || kind === "RADIO" ? { selected } : {}), ...(href ? { href } : {}) }];
   }));
   const surfaceSignals = await main.locator('a, button, [role="button"], label, [role="dialog"]').evaluateAll((nodes) => {
     const signals: { kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "MARKETING_CONSENT" | "POPUP"; label: string; source: "link" | "button" | "text"; href?: string }[] = [];
@@ -140,7 +158,7 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
   // PNG IHDR stores the rendered width and height as unsigned big-endian integers.
   const screenshotArea = { ...origin, width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
   const capturedAt = new Date().toISOString();
-  return { evidenceId: `evidence:${stage}`, stage, url, screenshot, screenshotArea, capturedAt, priceLines, textLines, options, fees, precheckedSignals, surfaceSignals };
+  return { evidenceId: `evidence:${stage}`, stage, url, screenshot, screenshotArea, capturedAt, priceLines, textLines, options, fees, precheckedSignals, surfaceSignals, decisionControls, cartItemCount };
 }
 
 export async function scanDemo(
@@ -225,6 +243,7 @@ export async function scanDemo(
       comparisonVersion: scanComparisonVersion,
       scanStatus: snapshots.length === selectedStages.length ? "COMPLETED" : "PARTIAL",
       executionMode: "DEMO" as const,
+      authContext: "ANONYMOUS" as const,
       viewport,
       purchasePath,
       scenario,
@@ -232,7 +251,7 @@ export async function scanDemo(
       snapshots,
       interactions,
       priceLedger: buildPriceLedger(snapshots),
-      reviewCandidates: collectReviewCandidates(snapshots),
+      reviewCandidates: [...collectRuleReviewCandidates({ snapshots, surfaces: [], crawlPages: [] }), ...collectReviewCandidates(snapshots)],
       findings: detect(snapshots),
     } as const;
     await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");

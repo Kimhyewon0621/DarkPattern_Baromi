@@ -22,9 +22,13 @@ export async function safeConnectTarget(authority: string, resolveHost: ResolveH
 }
 
 async function systemResolve(hostname: string) {
-  const dns = new Resolver({ timeout: 2500, tries: 1 });
-  const records = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
-  return records.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const dns = new Resolver({ timeout: 2500, tries: 1 });
+    const records = await Promise.allSettled([dns.resolve4(hostname), dns.resolve6(hostname)]);
+    const addresses = records.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+    if (addresses.length) return addresses;
+  }
+  return [];
 }
 
 export type SafeBrowserProxy = { server: string; close: () => Promise<void> };

@@ -49,7 +49,7 @@
 - `purchasePath`: `CART` 또는 `DIRECT`
 - 동적 진단의 로그인 자격증명은 이 API로 전달하지 않는다. 자격증명은 워커가 접근하는 암호화 보관소에만 둔다.
 
-`GET /api/v1/scans/{scanId}` — 소유자 범위의 단건 상태 조회
+`GET /api/v1/scans/{scanId}` — 소유자 범위의 단건 상태 조회. `phaseResults`는 구매 단계·별도 탐색 영역·전체 크롤링의 저장된 상태, 시간, 사유, 증거 ID를 담는다. 단계 결과가 없는 과거 진단은 빈 객체를 반환한다.
 
 `GET /api/v1/scans/shop/{shopId}?limit=50` — 소유자 범위의 최신순 목록. `limit`은 1~100으로 제한된다.
 
@@ -68,6 +68,8 @@
 - `POST /api/v1/scans/claim` — `queued` 중 가장 오래된 진단을 원자적으로 `running`으로 변경
 - `POST /api/v1/scans/recover` — 지정 시각보다 오래 실행 중인 작업을 `failed`로 복구
 - `PATCH /api/v1/scans/{scanId}/status` — 워커 상태 콜백
+
+상태 콜백 본문은 `{ "status": "queued|running|partial|succeeded|failed|cancelled", "stage": "product|cart|checkout|surface:<영역>|site-crawl|null", "phaseResults": { "product": { "status": "COVERED", "durationMs": 1200, "evidenceIds": ["evidence-id"] } }, "reportJson": "..." }` 형식이다. 단계 결과 JSON은 최대 256KiB, 보고서 JSON은 최대 4MB다. 크기 제한 초과 시 상태를 바꾸지 않고 `413`을 반환한다.
 
 상태 전이:
 

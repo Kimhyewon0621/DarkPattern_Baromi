@@ -9,7 +9,7 @@ import { detect, type Snapshot } from "./rules";
 import { publicShopUrl } from "./targets";
 import { feeMentionsFromText } from "./price-text";
 import { startSafeBrowserProxy } from "./safe-browser-proxy";
-import { collectReviewCandidates } from "./review-candidates";
+import { collectReviewCandidates, collectRuleReviewCandidates } from "./review-candidates";
 import { structuredProductLinks } from "./structured-product-links";
 
 export type CollectionFailureCode =
@@ -32,9 +32,13 @@ export async function isProductPage(page: Page, url: string) {
   // count only visible controls; hidden card controls must not make the page
   // look ambiguous.
   const detailActions = page.locator('button:visible, a:visible').filter({
-    hasText: /장바구니\s*담기|바로\s*구매|구매하기|add\s*to\s*(?:cart|bag)|buy\s*now/i,
+    hasText: /장바구니\s*담기|바로\s*구매|add\s*to\s*(?:cart|bag)|buy\s*now/i,
   });
   if (await detailActions.count() > 0) return true;
+  // Order/apply/booking CTAs (주문·신청·예약·구독…하기) also appear once per card on some listings;
+  // only a single visible order CTA identifies an opened product detail.
+  const orderActions = page.locator('button:visible, a:visible').filter({ hasText: /(?:주문|신청|예약|구독)(?!\s*(?:확정|완료))[^\n]{0,8}하기|order\s*now|book\s*now|subscribe/i });
+  if (await orderActions.count() === 1) return true;
   for (const name of [addToCart, buyNow]) {
     const actions = page.getByRole("button", { name }).or(page.getByRole("link", { name })).filter({ visible: true });
     if (await actions.count() === 1) return true;
@@ -77,7 +81,7 @@ export async function scanPublicShop(
     const partial = async (reason: string, code: CollectionFailureCode) => {
       const report = {
         comparisonVersion: scanComparisonVersion,
-        scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
+        scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath, authContext: "ANONYMOUS" as const,
         scenario: "public" as const, targetUrl, snapshots: [], priceLedger: buildPriceLedger([]), findings: [], reviewCandidates: [],
         collectionFailure: reason, collectionFailureCode: code,
       };
@@ -188,8 +192,8 @@ export async function scanPublicShop(
             const report = {
               comparisonVersion: scanComparisonVersion,
               scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
-              scenario: "public" as const, targetUrl, snapshots: [product],
-              priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: collectReviewCandidates([product]), collectionFailure: null, collectionFailureCode: null,
+              scenario: "public" as const, targetUrl, authContext: "ANONYMOUS" as const, snapshots: [product],
+              priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: [...collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] }), ...collectReviewCandidates([product])], collectionFailure: null, collectionFailureCode: null,
             };
             await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
             return report;
@@ -212,8 +216,8 @@ export async function scanPublicShop(
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
-      scenario: "public" as const, targetUrl,
-      snapshots: [product], priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: collectReviewCandidates([product]), collectionFailure: null, collectionFailureCode: null,
+      scenario: "public" as const, targetUrl, authContext: "ANONYMOUS" as const,
+      snapshots: [product], priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: [...collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] }), ...collectReviewCandidates([product])], collectionFailure: null, collectionFailureCode: null,
     };
     await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
     return report;

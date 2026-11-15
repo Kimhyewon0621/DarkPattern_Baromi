@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { evidenceDirectory } from "./evidence-directory";
 import { db } from "./db";
@@ -13,15 +13,21 @@ import { scanComparisonVersion } from "./scan-comparison";
 import { decryptCredentials, type TestCredentials } from "./credential-vault";
 import { notifySpringScanStatus } from "./spring-status";
 import { classifyDynamicFailure } from "./scan-failure";
+import { closeCancelledScanPhases, initialScanPhases, parseScanPhases, updateScanPhase, type ScanPhaseId, type ScanPhaseStatus } from "./scan-phases";
+import { buildRuleCoverage } from "./rule-coverage";
 
-export async function runScanJob(id: string, targetUrl: string) {
+type ScanJobCallbacks = {
+  onPhase?: (id: ScanPhaseId, status: ScanPhaseStatus, details?: { reason?: string; evidenceIds?: string[] }) => Promise<void>;
+};
+
+export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJobCallbacks = {}) {
   const store = db();
   const startedAt = Date.now();
   try {
     const target = scanTarget(targetUrl);
     if (!target) throw new Error("허용 목록에 없는 진단 대상입니다.");
     const requested = await store.scan.findUnique({
-      where: { id }, select: { executionMode: true, viewport: true, purchasePath: true, credentialCiphertext: true, shop: { select: { verifiedAt: true } } },
+      where: { id }, select: { executionMode: true, viewport: true, purchasePath: true, credentialCiphertext: true, phaseResultsJson: true, shop: { select: { verifiedAt: true } } },
     });
     if (!requested) throw new Error("진단 작업을 찾을 수 없습니다.");
     if (requested.executionMode === "DYNAMIC" && (target.scenario !== "public" || (!requested.shop?.verifiedAt && !requested.credentialCiphertext))) {
@@ -52,21 +58,39 @@ export async function runScanJob(id: string, targetUrl: string) {
     try {
       const directory = evidenceDirectory(id);
       let progress = 0;
-      const onStage = async (snapshot: { stage: string }) => {
-        const scan = await store.scan.update({ where: { id }, data: { progress: ++progress, currentStage: snapshot.stage } });
-        await notifySpringScanStatus(id, "running", snapshot.stage);
+      let lastCrawlWriteAt = 0;
+      let lastCrawlVisited = -1;
+      let phases = parseScanPhases(requested.phaseResultsJson, initialScanPhases(requested.purchasePath === "DIRECT" ? "DIRECT" : "CART", requested.executionMode === "DYNAMIC"));
+      const recordPhase = async (phaseId: ScanPhaseId, status: ScanPhaseStatus, details: { reason?: string; evidenceIds?: string[] } = {}) => {
+        phases = updateScanPhase(phases, phaseId, { status, ...details });
+        await store.scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: `${phaseId}:${status}` } });
+        void notifySpringScanStatus(id, "running", `${phaseId}:${status}`, undefined, phases);
+        await callbacks.onPhase?.(phaseId, status, details);
+      };
+      const onStage = async (snapshot: { stage: string; evidenceId?: string }) => {
+        const stage = snapshot.stage as ScanPhaseId;
+        const scan = await store.scan.update({ where: { id }, data: { progress: ++progress } });
+        await recordPhase(stage, "RUNNING", snapshot.evidenceId ? { evidenceIds: [...(phases[stage]?.evidenceIds ?? []), snapshot.evidenceId] } : {});
         if (scan.cancelRequested) throw new Error("진단 중단");
       };
       let report;
       const scanWithBrowser = (instance: typeof browser) => target.scenario === "public"
         ? requested.executionMode === "DYNAMIC" && proxy
-          ? scanDynamicPublicShop(instance, target.url, directory, proxy.server, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", onStage, requested.purchasePath === "DIRECT" ? "DIRECT" : "CART", credentials)
+          ? scanDynamicPublicShop(instance, target.url, directory, proxy.server, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", onStage, requested.purchasePath === "DIRECT" ? "DIRECT" : "CART", credentials, async (surface, status, details) => recordPhase(`surface:${surface}`, status, details), async (crawl) => {
+            const now = Date.now();
+            if (crawl.visited !== 0 && crawl.visited !== lastCrawlVisited && now - lastCrawlWriteAt < 1_000 && crawl.visited - lastCrawlVisited < 5) return;
+            lastCrawlWriteAt = now;
+            lastCrawlVisited = crawl.visited;
+            await recordPhase("site-crawl", "RUNNING", {
+              reason: `고유 URL ${crawl.uniqueVisitedUrls}/${crawl.uniqueDiscoveredUrls} · 화면 상태 ${crawl.visited}/${crawl.discovered} · 대기 ${crawl.pending} · 현재 ${crawl.currentUrl.slice(0, 180)}`,
+            });
+          })
           : scanPublicShop(instance, target.url, directory, onStage, undefined, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", requested.purchasePath === "DIRECT" ? "DIRECT" : "CART")
         : scanDemo(instance, new URL(target.url).origin, target.scenario, directory, onStage, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", requested.purchasePath === "DIRECT" ? "DIRECT" : "CART");
       try {
         let scanPromise: Promise<any> = scanWithBrowser(browser);
         const dynamicTimeoutMs = requested.executionMode === "DYNAMIC"
-          ? Math.min(Math.max(Number(process.env.DYNAMIC_SCAN_TIMEOUT_MS ?? 90_000), 30_000), 180_000)
+          ? Math.min(Math.max(Number(process.env.DYNAMIC_SCAN_TIMEOUT_MS ?? 270_000), 30_000), 270_000)
           : 0;
         let dynamicTimer: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -91,6 +115,7 @@ export async function runScanJob(id: string, targetUrl: string) {
         report = {
           comparisonVersion: scanComparisonVersion,
           scanStatus: "PARTIAL" as const, executionMode: "DYNAMIC" as const,
+          authContext: "UNKNOWN" as const,
           viewport: requested.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
           purchasePath: requested.purchasePath === "DIRECT" ? "DIRECT" as const : "CART" as const,
           scenario: "public" as const, targetUrl, snapshots: [], interactions: [],
@@ -104,6 +129,48 @@ export async function runScanJob(id: string, targetUrl: string) {
       // Keep the report and database duration identical so smoke tests and the
       // UI can explain where time was spent without relying on a second clock.
       report = { ...report, durationMs: Date.now() - startedAt };
+      const snapshots = report.snapshots ?? [];
+      for (const stage of ["product", "cart", "checkout"] as const) {
+        const evidence = snapshots.filter((item: { stage: string }) => item.stage === stage);
+        if (evidence.length) await recordPhase(stage, "COVERED", { evidenceIds: evidence.map((item: { evidenceId?: string }) => item.evidenceId).filter(Boolean) as string[] });
+        else if (phases[stage]?.status !== "SKIPPED") await recordPhase(stage, report.explorationBlocker?.stage === stage ? "BLOCKED" : "NOT_FOUND", { reason: report.explorationBlocker?.stage === stage ? report.explorationBlocker.code : stage === "cart" && report.explorationBlocker?.action === "ADD_TO_CART"
+          ? `상품 화면에서 장바구니 담기 동작을 하나로 확정하지 못했습니다(${report.explorationBlocker.code}). 주문서는 바로 주문 경로로만 확인했습니다.`
+          : "검사 중 이 단계의 화면에 도달하지 못했습니다." });
+      }
+      for (const surface of ["CATALOG", "AUTH", "COUPON", "RECOMMENDATION", "SUBSCRIPTION", "CANCELLATION", "POLICY"] as const) {
+        if (!phases[`surface:${surface}`] || phases[`surface:${surface}`]?.status === "SKIPPED") continue;
+        const found = (report.surfaceObservations ?? []).filter((item: { kind: string }) => item.kind === surface);
+        const inspected = found.find((item: { outcome: string }) => item.outcome === "OBSERVED");
+        const discovered = found.find((item: { outcome: string }) => item.outcome === "DISCOVERED");
+        const blocked = found.length > 0 && !inspected && !discovered;
+        await recordPhase(`surface:${surface}`, inspected ? "COVERED" : discovered ? "DISCOVERED" : blocked ? "BLOCKED" : "NOT_FOUND", {
+          reason: inspected ? undefined : discovered ? "화면 후보를 찾았지만 내부 상호작용 검사는 아직 미완료입니다." : blocked ? "접근이 제한되거나 경로를 읽지 못했습니다." : "정적 탐색 후보에서 이 영역을 찾지 못했습니다.",
+          evidenceIds: found.map((item: { evidenceId: string }) => item.evidenceId),
+        });
+      }
+      if (requested.executionMode === "DYNAMIC" && phases["site-crawl"]?.status !== "SKIPPED") {
+        const crawl = report.siteCrawl as {
+          complete?: boolean; pages?: { evidenceId: string }[];
+          visitedUrlCount?: number; discoveredUrlCount?: number; visitedStateCount?: number; discoveredStateCount?: number;
+          uniqueVisitedUrlCount?: number; uniqueDiscoveredUrlCount?: number;
+          failedUrlCount?: number; pendingUrls?: string[]; skippedLinks?: { reason: string }[]; durationMs?: number; stopReason?: string;
+        } | undefined;
+        const complete = crawl?.complete === true;
+        const pageEvidenceIds = (crawl?.pages ?? []).map(({ evidenceId }) => evidenceId);
+        const failures = crawl?.failedUrlCount ?? 0;
+        const pending = crawl?.pendingUrls?.length ?? 0;
+        const visitedUrls = crawl?.uniqueVisitedUrlCount ?? 0;
+        const discoveredUrls = crawl?.uniqueDiscoveredUrlCount ?? 0;
+        const visitedStates = crawl?.visitedStateCount ?? crawl?.visitedUrlCount ?? 0;
+        const discoveredStates = crawl?.discoveredStateCount ?? crawl?.discoveredUrlCount ?? 0;
+        const reason = complete
+          ? `발견된 안전 경로 큐 소진 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 안전상 미방문 링크 ${crawl?.skippedLinks?.length ?? 0}개 · ${(crawl?.durationMs ?? 0)}ms`
+          : `순회 미완료 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 실패 ${failures} · 대기 ${pending} · ${crawl?.stopReason ?? "미완료 경로 존재"}`;
+        await recordPhase("site-crawl", complete ? "COVERED" : failures > 0 && (crawl?.visitedUrlCount ?? 0) === 0 ? "FAILED" : "BLOCKED", {
+          reason, evidenceIds: pageEvidenceIds,
+        });
+      }
+      report = { ...report, phaseResults: phases, ruleCoverage: buildRuleCoverage(report) };
       await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
       const finished = await store.scan.update({
         where: { id, status: "RUNNING", cancelRequested: false },
@@ -117,7 +184,7 @@ export async function runScanJob(id: string, targetUrl: string) {
         },
       });
       await store.scan.update({ where: { id }, data: { credentialCiphertext: null } });
-      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : "partial", undefined, JSON.stringify(report));
+      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : "partial", undefined, JSON.stringify(report), phases);
       return finished.reportPath;
     } finally {
       clearTimeout(timeout);
@@ -130,9 +197,64 @@ export async function runScanJob(id: string, targetUrl: string) {
       where: { id, status: "RUNNING", cancelRequested: true },
       data: { status: "CANCELLED" },
     });
-    if (cancelled.count) { await notifySpringScanStatus(id, "cancelled"); return null; }
-    await store.scan.updateMany({ where: { id, status: "RUNNING" }, data: { status: "FAILED", durationMs: Date.now() - startedAt } });
-    await notifySpringScanStatus(id, "failed");
+    if (cancelled.count) {
+      const scan = await store.scan.findUnique({ where: { id }, select: { purchasePath: true, executionMode: true, phaseResultsJson: true } }).catch(() => null);
+      if (scan) {
+        const phases = closeCancelledScanPhases(parseScanPhases(scan.phaseResultsJson,
+          initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC")));
+        await store.scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: "CANCELLED" } }).catch(() => undefined);
+      }
+      const cancelledScan = await store.scan.findUnique({ where: { id }, select: { phaseResultsJson: true } }).catch(() => null);
+      const cancelledPhases = cancelledScan?.phaseResultsJson ? JSON.parse(cancelledScan.phaseResultsJson) as Record<string, unknown> : undefined;
+      await notifySpringScanStatus(id, "cancelled", undefined, undefined, cancelledPhases); return null;
+    }
+    const message = error instanceof Error ? error.message : "진단 처리 중 알 수 없는 오류가 발생했습니다.";
+    const existing = await store.scan.findUnique({
+      where: { id },
+      select: { status: true, scenario: true, executionMode: true, viewport: true, purchasePath: true, targetUrl: true, phaseResultsJson: true },
+    }).catch(() => null);
+    let failedPhasesForMirror: Record<string, unknown> | undefined;
+    let failedReportForMirror: string | undefined;
+    if (existing?.status === "RUNNING") {
+      const dynamic = existing.executionMode === "DYNAMIC";
+      const purchasePath = existing.purchasePath === "DIRECT" ? "DIRECT" : "CART";
+      let phases = parseScanPhases(existing.phaseResultsJson, initialScanPhases(purchasePath, dynamic));
+      for (const [phaseId, phase] of Object.entries(phases) as [ScanPhaseId, NonNullable<typeof phases[ScanPhaseId]>][]) {
+        if (phase.status === "PENDING" || phase.status === "RUNNING") {
+          phases = updateScanPhase(phases, phaseId, { status: "FAILED", reason: message });
+        }
+      }
+      const failedReportBase = {
+        comparisonVersion: scanComparisonVersion,
+        scanStatus: "FAILED" as const,
+        executionMode: existing.executionMode,
+        authContext: "UNKNOWN" as const,
+        viewport: existing.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
+        purchasePath,
+        scenario: existing.scenario,
+        targetUrl: existing.targetUrl,
+        durationMs: Date.now() - startedAt,
+        snapshots: [], interactions: [], explorationBlocker: null,
+        networkPriceEvidence: [], priceLedger: buildPriceLedger([]), findings: [],
+        collectionFailure: message,
+        collectionFailureCode: classifyDynamicFailure(message),
+        phaseResults: phases,
+      };
+      const failedReport = { ...failedReportBase, ruleCoverage: buildRuleCoverage(failedReportBase) };
+      failedPhasesForMirror = phases;
+      failedReportForMirror = JSON.stringify(failedReport);
+      const reportPath = join(evidenceDirectory(id), "report.json");
+      await mkdir(evidenceDirectory(id), { recursive: true });
+      await writeFile(reportPath, JSON.stringify(failedReport, null, 2) + "\n");
+      await store.scan.updateMany({ where: { id, status: "RUNNING" }, data: {
+        status: "FAILED", durationMs: Date.now() - startedAt,
+        phaseResultsJson: JSON.stringify(phases), currentStage: `FAILED:${message.slice(0, 160)}`,
+        reportPath,
+      } });
+    } else {
+      await store.scan.updateMany({ where: { id, status: "RUNNING" }, data: { status: "FAILED", durationMs: Date.now() - startedAt } });
+    }
+    await notifySpringScanStatus(id, "failed", undefined, failedReportForMirror, failedPhasesForMirror);
     throw error;
   }
 }
