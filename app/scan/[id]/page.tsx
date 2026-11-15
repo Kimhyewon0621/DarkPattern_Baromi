@@ -2,9 +2,44 @@ import Link from "next/link";
 import { ScanProgress } from "./scan-progress";
 import "../new/scan.css";
 
-export const metadata = { robots: { index: false, follow: false } };
+export const dynamic = "force-dynamic";
+
+export const metadata = {
+  title: "쇼핑몰 탐색 진행 현황 | 바로미",
+  robots: { index: false, follow: false },
+};
 
 export default async function ScanPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  return <div className="scan-page"><header className="site-header"><Link className="brand" href="/" aria-label="바로미 홈"><img src="/brand/baromi-logo-full.png" alt="바로미" /></Link><Link className="scan-back" href="/">서비스 소개로 돌아가기 →</Link></header><main className="scan-layout"><div className="scan-heading"><p className="eyebrow">LIVE DIAGNOSIS</p><h1>쇼핑몰을 살펴보고 있어요</h1><p>결제나 주문 확정 없이, 고객이 마주하는 구매 흐름을 단계별로 기록합니다.</p></div><div className="scan-panel"><ScanProgress id={id} /></div></main></div>;
+  return (
+    <div className="scan-page">
+      <header className="scan-topbar">
+        <div className="clean-wrap">
+          <div className="scan-topbar-inner">
+            <Link className="cs-brand" href="/" aria-label="바로미 홈" style={{ display: "inline-flex", alignItems: "center" }}>
+              <img
+                src="/brand/baromi-logo.png"
+                alt="바로미"
+                height={28}
+                style={{ height: 28, width: "auto", objectFit: "contain", display: "block" }}
+              />
+            </Link>
+            <Link className="cs-btn-secondary" href="/">
+              메인으로
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      <main className="scan-layout">
+        <div className="scan-heading" style={{ textAlign: "center", marginBottom: 32 }}>
+          <span className="scan-heading-tag">LIVE AUDIT RUNNING</span>
+          <h1>실시간 구매 여정 탐색 중</h1>
+          <p>Playwright 가상 브라우저가 격리된 세션에서 상품 상세부터 주문서까지 안전하게 탐색하고 있습니다.</p>
+        </div>
+
+        <ScanProgress id={id} />
+      </main>
+    </div>
+  );
 }

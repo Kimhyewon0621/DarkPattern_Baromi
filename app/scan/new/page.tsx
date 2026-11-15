@@ -4,13 +4,77 @@ import "./scan.css";
 
 export const dynamic = "force-dynamic";
 
+export const metadata = {
+  title: "새 쇼핑몰 진단 신청 | 바로미",
+  robots: { index: false, follow: false },
+};
+
 export default function NewScanPage() {
   return (
     <div className="scan-page">
-      <header className="site-header"><Link className="brand" href="/" aria-label="바로미 홈"><img src="/brand/baromi-logo-full.png" alt="바로미" /></Link><Link className="scan-back" href="/">서비스 소개로 돌아가기 →</Link></header>
+      {/* Topbar */}
+      <header className="scan-topbar">
+        <div className="clean-wrap">
+          <div className="scan-topbar-inner">
+            <Link className="cs-brand" href="/" aria-label="바로미 홈" style={{ display: "inline-flex", alignItems: "center" }}>
+              <img
+                src="/brand/baromi-logo.png"
+                alt="바로미"
+                height={28}
+                style={{ height: 28, width: "auto", objectFit: "contain", display: "block" }}
+              />
+            </Link>
+            <Link className="cs-btn-secondary" href="/">
+              서비스 소개로 돌아가기
+            </Link>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Layout */}
       <main className="scan-layout">
-        <div className="scan-heading"><p className="eyebrow">START YOUR SCAN</p><h1>내 쇼핑몰 진단하기</h1><p>구매 과정에서 고객이 마주하는 가격과 선택 항목을 확인해 보세요.</p></div>
-        <div className="scan-columns"><section className="scan-panel"><h2>진단 설정</h2><ScanForm /></section><aside className="scan-aside"><span className="scan-aside-icon">✦</span><h2>바로미가 확인하는 것</h2><div><strong>01 · 기본 선택 항목</strong><p>의도치 않게 선택된 유료 옵션이나 동의 항목을 살펴봅니다.</p></div><div><strong>02 · 가격 공개 시점</strong><p>상품 화면부터 주문서까지 비용이 언제 나타나는지 기록합니다.</p></div><div><strong>03 · 확인 가능한 근거</strong><p>확인한 단계와 미검사 범위를 구분해 리포트로 제공합니다.</p></div><small>진단 결과는 가이드라인 기준 위험 신호이며 적법성 확정 판단이 아닙니다.</small></aside></div>
+        <div className="scan-heading">
+          <span className="scan-heading-tag">NEW AUDIT SESSION</span>
+          <h1>내 쇼핑몰 사전 점검 신청</h1>
+          <p>고객이 마주하는 상품 노출부터 주문서까지의 결제 흐름을 안전하게 실측합니다.</p>
+        </div>
+
+        <div className="scan-columns">
+          {/* Left Panel: The Clean Form */}
+          <section className="scan-panel">
+            <h2>점검 환경 및 옵션 설정</h2>
+            <ScanForm />
+          </section>
+
+          {/* Right Aside: Inspection Scope Guide */}
+          <aside className="scan-aside">
+            <div className="scan-aside-head">
+              <span>바로미 사전 점검 원칙</span>
+            </div>
+
+            <div className="scan-aside-item">
+              <span className="scan-aside-num">CHECK 01</span>
+              <div className="scan-aside-title">기본 선택 유료 옵션</div>
+              <p className="scan-aside-desc">소비자의 의도와 무관하게 장바구니에 몰래 체크된 유료 부가상품을 찾아냅니다.</p>
+            </div>
+
+            <div className="scan-aside-item">
+              <span className="scan-aside-num">CHECK 02</span>
+              <div className="scan-aside-title">순차공개 가격 차이</div>
+              <p className="scan-aside-desc">첫 상품 화면에서 숨겨져 있다가 결제 직전에 갑자기 붙는 필수 비용을 기록합니다.</p>
+            </div>
+
+            <div className="scan-aside-item">
+              <span className="scan-aside-num">CHECK 03</span>
+              <div className="scan-aside-title">100% 결제 실행 차단</div>
+              <p className="scan-aside-desc">실제 주문 확정과 결제 승인은 원천적으로 클릭하지 않으므로 안심하고 점검할 수 있습니다.</p>
+            </div>
+
+            <div className="scan-aside-note">
+              본 진단 결과는 법률 위반 확정이 아닌 공정거래위원회 심사지침 기준의 사전 점검 위험 신호입니다.
+            </div>
+          </aside>
+        </div>
       </main>
     </div>
   );

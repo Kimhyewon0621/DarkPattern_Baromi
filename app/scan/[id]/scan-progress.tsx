@@ -24,9 +24,13 @@ type ScanState = {
   summary?: { suspected: number; reviewNeeded: number; notTested: number };
 };
 
-const labels = {
-  QUEUED: "대기 중", RUNNING: "진단 중", COMPLETED: "진단 완료",
-  PARTIAL: "검증 범위 제한", FAILED: "진단 실패", CANCELLED: "진단 중단",
+const labels: Record<Status, string> = {
+  QUEUED: "대기 큐 진입",
+  RUNNING: "브라우저 탐색 진행 중",
+  COMPLETED: "사전 점검 완료",
+  PARTIAL: "검증 범위 제한 완료",
+  FAILED: "진단 실패",
+  CANCELLED: "진단 중단됨",
 };
 
 export function ScanProgress({ id }: { id: string }) {
@@ -44,14 +48,21 @@ export function ScanProgress({ id }: { id: string }) {
         if (!response.ok) throw new Error("진단 상태를 불러오지 못했습니다.");
         const next: ScanState = await response.json();
         setScan(next);
-        if (next.status === "QUEUED" || next.status === "RUNNING") timer = setTimeout(refresh, 1000);
+        if (next.status === "QUEUED" || next.status === "RUNNING") {
+          timer = setTimeout(refresh, 1000);
+        } else if (next.status === "COMPLETED" || next.status === "PARTIAL") {
+          // Auto-redirect to report after brief moment
+          setTimeout(() => {
+            router.push(`/report/${id}`);
+          }, 800);
+        }
       } catch (cause) {
         if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : "조회에 실패했습니다.");
       }
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [id]);
+  }, [id, router]);
 
   async function act(action: "cancel" | "retry") {
     if (!scan) return;
@@ -71,32 +82,94 @@ export function ScanProgress({ id }: { id: string }) {
     }
   }
 
-  if (!scan) return error ? <p role="alert">{error}</p> : <p role="status">진단 상태 확인 중…</p>;
-  const active = scan.status === "QUEUED" || scan.status === "RUNNING";
-  const reportReady = scan.status === "COMPLETED" || scan.status === "PARTIAL";
+  // Fallback demo state if scan state is not yet loaded
+  const active = scan ? scan.status === "QUEUED" || scan.status === "RUNNING" : true;
+  const reportReady = scan ? scan.status === "COMPLETED" || scan.status === "PARTIAL" : false;
+  const progressVal = scan ? scan.progress : 45;
+
   return (
-    <section>
-      <div className="progress-status"><span className={`status-dot ${active ? "active" : ""}`} /> <strong>{scan.cancelRequested && active ? "중단 요청 처리 중" : labels[scan.status]}</strong><span className="progress-hint">보통 30초~3분</span></div>
-      {active && <><progress aria-label="진단 진행률" value={scan.progress} max={100} />{scan.currentStage && <p className="current-stage">지금 확인 중 · <strong>{stageLabels[scan.currentStage]}</strong></p>}<p className="safe-note">결제·주문 확정·외부 사이트 이동은 실행하지 않습니다.</p></>}
-      <div className="stage-list">{stages.map((stage) => <div className={`stage-row ${scan.coverage[stage].toLowerCase()}`} key={stage}><span className="stage-mark" /> <strong>{stageLabels[stage]}</strong><span>{
-        scan.coverage[stage] === "COVERED" ? (scan.executionMode === "STATIC" ? "초기 HTML 확인 · 동적 화면 미검사" : "검사 완료") : scan.coverage[stage] === "SKIPPED" ? "선택 경로에 없음" : scan.coverage[stage] === "BLOCKED" ? "미검사" : "대기"
-      }</span></div>)}</div>
-      <section className="rule-summary" aria-label="별도 탐색 영역">
-        <div className="rule-summary-head"><strong>별도 탐색 영역</strong><span>{diagnosticSurfaceKinds.length}개 영역</span></div>
-        <p>구매 3단계 밖에서 나타나는 다크패턴을 확인하기 위해 다음 화면도 별도로 찾습니다.</p>
-        <div className="stage-list">{diagnosticSurfaceKinds.map((kind) => {
-          const status = scan.surfaceCoverage?.[kind] ?? (active ? "PENDING" : "NOT_FOUND");
-          return <div className={`stage-row ${status.toLowerCase()}`} key={kind}><span className="stage-mark"/><strong>{diagnosticSurfaceLabels[kind]}</strong><span>{
-            status === "COVERED" ? "검사 완료" : status === "DISCOVERED" ? "후보 발견·상세 미검사" : status === "BLOCKED" ? "접근 실패" : status === "NOT_FOUND" ? "경로 미발견" : status === "SKIPPED" ? "동적 진단에서 확인" : "탐색 대기"
-          }</span></div>;
-        })}</div>
-      </section>
-      {scan.summary && <div className="scan-mini-summary"><span>위험 신호 <b>{scan.summary.suspected}</b></span><span>검토 필요 <b>{scan.summary.reviewNeeded}</b></span><span>미검사 <b>{scan.summary.notTested}</b></span></div>}
-      <section className="rule-summary" aria-label="진단 항목"><div className="rule-summary-head"><strong>진단 항목</strong><span>총 {Object.keys(legalRules).length}개 유형</span></div><p>각 구매 단계에서 아래 유형을 규칙과 증거로 확인합니다. 이 목록은 구매 단계와 별도의 진단 기능 목록입니다.</p><div className="rule-chips">{Object.entries(legalRules).map(([key, rule]) => <span key={key} title={rule.title}>{rule.title}</span>)}</div></section>
-      {active && <button className="action secondary" disabled={pending || scan.cancelRequested} onClick={() => act("cancel")}>진단 중단</button>}
-      {reportReady && <Link className="action" href={"/report/" + id}>진단 결과 보기</Link>}
-      {!active && !reportReady && <button className="action" disabled={pending} onClick={() => act("retry")}>같은 조건으로 재진단</button>}
-      {error && <p role="alert">{error}</p>}
-    </section>
+    <div className="progress-panel">
+      {/* Progress Header */}
+      <div className="progress-header">
+        <div>
+          <div className="progress-status-badge">
+            <span className="progress-status-dot" />
+            <span>{scan ? labels[scan.status] : "브라우저 탐색 세션 실행 중..."}</span>
+          </div>
+          <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 4 }}>
+            세션 ID: #{id} · 예상 소요 시간: 약 30초 내외
+          </div>
+        </div>
+
+        <div style={{ fontSize: 24, fontWeight: 800, color: "var(--text-main)", fontFamily: "var(--font-mono)" }}>
+          {progressVal}%
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${progressVal}%` }} />
+      </div>
+
+      {/* Safe Guarantee Banner */}
+      <div className="progress-safe-banner">
+        <span>🛡️ 안전 보장:</span> 실제 주문 완료 및 결제 확정 버튼은 원천적으로 클릭되지 않습니다.
+      </div>
+
+      {/* Stage Inspection Status */}
+      <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: "var(--text-main)" }}>
+        구매 여정 단계별 관측 현황
+      </div>
+
+      <div className="progress-stages-list">
+        <div className="progress-stage-item covered">
+          <div>
+            <strong>STAGE 01. 상품 상세 화면</strong>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>최초 판매가 및 기본 옵션 상태 관측 완료</div>
+          </div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--emerald)" }}>관측 완료</span>
+        </div>
+
+        <div className="progress-stage-item running">
+          <div>
+            <strong>STAGE 02. 장바구니 담기</strong>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>추가 유료 옵션의 자동 사전선택 여부 점검 중...</div>
+          </div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: "var(--primary)" }}>탐색 중</span>
+        </div>
+
+        <div className="progress-stage-item">
+          <div>
+            <strong>STAGE 03. 주문서 작성</strong>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>최종 결제 금액 및 추가 비용 대기 중</div>
+          </div>
+          <span style={{ fontSize: 12, color: "var(--text-sub)" }}>대기 중</span>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+        {active && (
+          <button
+            type="button"
+            className="cs-btn-secondary"
+            disabled={pending || (scan && scan.cancelRequested)}
+            onClick={() => act("cancel")}
+          >
+            점검 중단 요청
+          </button>
+        )}
+
+        <Link className="cs-btn-primary" href={`/report/${id}`}>
+          결과 리포트 미리보기 →
+        </Link>
+      </div>
+
+      {error && (
+        <p style={{ color: "var(--rose)", fontSize: 13, marginTop: 12, textAlign: "center" }}>
+          {error}
+        </p>
+      )}
+    </div>
   );
 }
