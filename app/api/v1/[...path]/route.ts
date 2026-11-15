@@ -18,7 +18,7 @@ import { listSpringShopScans, listSpringShops, mirrorSpringScan, mirrorSpringSho
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
 import { supabaseOwner } from "../../../../src/supabase-auth";
-import { buildRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
+import { buildRuleCoverage, summarizeRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
 import { buildAiCandidatePayload } from "../../../../src/ai-review-payload";
 import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
@@ -72,6 +72,88 @@ const rateLimit = (request: NextRequest, key: string, limit: number, windowMs: n
 
 async function getReport(path: string | null): Promise<Report | null> {
   return path ? JSON.parse(await readFile(path, "utf8")) : null;
+}
+
+function serializeAiReview(review: {
+  id: string; status: string; requestedAt: Date; completedAt: Date | null; provider: string | null; model: string | null;
+  candidateCount: number; durationMs: number | null; error: string | null; resultJson: string | null; usageJson: string | null; operatorLabelsJson: string | null;
+} | null) {
+  return review ? {
+    id: review.id, status: review.status, requestedAt: review.requestedAt,
+    completedAt: review.completedAt, provider: review.provider, model: review.model,
+    candidateCount: review.candidateCount, durationMs: review.durationMs, error: review.error,
+    result: review.resultJson ? JSON.parse(review.resultJson) : null,
+    usage: review.usageJson ? JSON.parse(review.usageJson) : null,
+    operatorLabels: review.operatorLabelsJson ? JSON.parse(review.operatorLabelsJson) : null,
+  } : null;
+}
+
+async function normalizeSpringReport(raw: Record<string, unknown>, scanId: string, ownerHash: string) {
+  const report = typeof raw.reportJson === "string" ? JSON.parse(raw.reportJson) as Record<string, unknown> : raw;
+  const local = await db().scan.findFirst({
+    where: { id: scanId, shop: { ownerHash } },
+    include: { findings: { orderBy: { id: "asc" } }, aiReview: true, shop: { select: { plan: true } } },
+  }).catch(() => null);
+  const baseline = local?.baselineScanId ? await db().scan.findFirst({
+    where: { id: local.baselineScanId, shopId: local.shopId, shop: { ownerHash } },
+    select: { reportPath: true },
+  }) : null;
+  const baselineReport = await getReport(baseline?.reportPath ?? null).catch(() => null);
+  const evidence = report as unknown as Parameters<typeof buildRuleCoverage>[0];
+  // Recompute from the stored observations so legacy reports cannot leak a
+  // partial/stale rule map that omits decisionMode, reason, or evidence IDs.
+  const ruleCoverage = buildRuleCoverage({
+    ...evidence,
+    findings: Array.isArray(report.findings) ? report.findings as Parameters<typeof buildRuleCoverage>[0]["findings"] : [],
+    snapshots: Array.isArray(report.snapshots) ? report.snapshots as Parameters<typeof buildRuleCoverage>[0]["snapshots"] : [],
+    surfaceObservations: Array.isArray(report.surfaceObservations) ? report.surfaceObservations as Parameters<typeof buildRuleCoverage>[0]["surfaceObservations"] : [],
+    reviewCandidates: Array.isArray(report.reviewCandidates) ? report.reviewCandidates as Parameters<typeof buildRuleCoverage>[0]["reviewCandidates"] : [],
+    authContext: report.authContext === "ANONYMOUS" || report.authContext === "TEST_ACCOUNT" ? report.authContext : "UNKNOWN",
+  });
+  const phaseResults = report.phaseResults ?? (local?.phaseResultsJson ? JSON.parse(local.phaseResultsJson) : {});
+  const purchasePath = report.purchasePath === "DIRECT" ? "DIRECT" : "CART";
+  const requiredStages = purchasePath === "DIRECT" ? ["product", "checkout"] : stages;
+  const snapshots = Array.isArray(report.snapshots) ? report.snapshots as { stage: string }[] : [];
+  const observedStages = new Set(snapshots.map(({ stage }) => stage));
+  const coverage = Object.fromEntries(stages.map((stage) => [stage,
+    observedStages.has(stage) ? "COVERED" : !requiredStages.includes(stage) ? "SKIPPED" : "BLOCKED"]));
+  const surfaceObservations = Array.isArray(report.surfaceObservations)
+    ? report.surfaceObservations as { kind: DiagnosticSurfaceKind; outcome: string }[] : [];
+  const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => {
+    if (report.executionMode !== "DYNAMIC") return [kind, "SKIPPED"];
+    const observations = surfaceObservations.filter((item) => item.kind === kind);
+    return [kind, observations.some((item) => item.outcome === "OBSERVED") ? "COVERED"
+      : observations.some((item) => item.outcome === "DISCOVERED") ? "DISCOVERED"
+        : observations.length ? "BLOCKED" : "NOT_FOUND"];
+  }));
+  const reportFindings = Array.isArray(report.findings) ? report.findings as Record<string, unknown>[] : [];
+  const findings = local ? local.findings.map((stored, index) => ({
+    ...(reportFindings[index] ?? {}), id: stored.id, type: stored.type, status: stored.status,
+    stage: stored.stage, reason: stored.reason, ruleVersion: stored.ruleVersion,
+  })) : reportFindings;
+  const summary = summarizeRuleCoverage(ruleCoverage);
+  const aiReviewCandidateCount = buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]).length;
+  const comparison = local?.baselineScanId ? {
+    baselineScanId: local.baselineScanId,
+    ...(baselineReport ? compareScans(baselineReport, report as unknown as Parameters<typeof compareScans>[1])
+      : { status: "UNAVAILABLE" as const, reason: "기준 보고서를 읽을 수 없습니다." }),
+  } : report.comparison ?? null;
+  return {
+    ...report,
+    scanId,
+    shopId: report.shopId ?? local?.shopId ?? null,
+    scanStatus: normalizeScanStatus(report.scanStatus ?? local?.status ?? raw.status),
+    executionMode: report.executionMode ?? local?.executionMode ?? raw.executionMode,
+    viewport: report.viewport ?? local?.viewport ?? raw.viewport,
+    purchasePath,
+    durationMs: report.durationMs ?? local?.durationMs ?? null,
+    phaseResults, coverage, surfaceCoverage, ruleCoverage, summary, findings,
+    comparison,
+    aiEligible: local?.shop?.plan === "PREMIUM",
+    aiReviewCandidateCount,
+    aiReview: serializeAiReview(local?.aiReview ?? null),
+    source: "SPRING_POSTGRES",
+  };
 }
 
 export async function POST(request: NextRequest, context: Context) {
@@ -237,7 +319,7 @@ export async function POST(request: NextRequest, context: Context) {
     if (!scan?.reportPath) return notFound();
     if (scan.shop?.plan !== "PREMIUM") return error("AI 정밀 분석은 유료 플랜에서 사용자가 별도로 요청할 수 있습니다.", 402);
     if (scan.aiReview?.status === "QUEUED" || scan.aiReview?.status === "RUNNING" || scan.aiReview?.status === "COMPLETED") {
-      return Response.json({ id: scan.aiReview.id, status: scan.aiReview.status }, { status: scan.aiReview.status === "COMPLETED" ? 200 : 202 });
+      return Response.json({ id: scan.aiReview.id, status: scan.aiReview.status, candidateCount: scan.aiReview.candidateCount }, { status: scan.aiReview.status === "COMPLETED" ? 200 : 202 });
     }
     const report = await getReport(scan.reportPath);
     const candidates = buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]);
@@ -247,7 +329,7 @@ export async function POST(request: NextRequest, context: Context) {
       create: { id: randomUUID(), scanId: id, status: "QUEUED", candidateCount: candidates.length },
       update: { status: "QUEUED", requestedAt: new Date(), startedAt: null, completedAt: null, resultJson: null, usageJson: null, error: null, candidateCount: candidates.length },
     });
-    return Response.json({ id: job.id, status: job.status }, { status: 202 });
+    return Response.json({ id: job.id, status: job.status, candidateCount: job.candidateCount }, { status: 202 });
   }
   if (resource === "scans" && id && action === "ai-review-labels" && route.length === 3) {
     const scan = await db().scan.findFirst({ where: { id, shop: { ownerHash } }, select: { aiReview: true, reportPath: true } });
@@ -421,7 +503,8 @@ export async function GET(request: NextRequest, context: Context) {
     if (spring) {
       const normalizedStatus = normalizeScanStatus(spring.status);
       if (action === "report") {
-        const response = Response.json({ ...spring, status: normalizedStatus, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
+        const report = await normalizeSpringReport(spring, id, ownerHash);
+        const response = Response.json(report, {
           headers: { "Cache-Control": "private, no-store" },
         });
         if (request.nextUrl.searchParams.get("download") === "1") {
@@ -444,7 +527,10 @@ export async function GET(request: NextRequest, context: Context) {
   const storedReport = !active && scan.reportPath ? await getReport(scan.reportPath).catch(() => null) : null;
   const reportEvidence = storedReport as unknown as Parameters<typeof buildRuleCoverage>[0] | null;
   const ruleCoverage: RuleCoverage | null = active ? null : reportEvidence
-    ? ((storedReport as unknown as { ruleCoverage?: RuleCoverage }).ruleCoverage ?? buildRuleCoverage(reportEvidence))
+    ? buildRuleCoverage({
+      ...reportEvidence,
+      authContext: reportEvidence.authContext === "ANONYMOUS" || reportEvidence.authContext === "TEST_ACCOUNT" ? reportEvidence.authContext : "UNKNOWN",
+    })
     : null;
   const observedStages = new Set(storedReport?.snapshots.map(({ stage }) => stage) ?? []);
   const requiredStages = scan.purchasePath === "DIRECT" ? new Set<Stage>(["product", "checkout"]) : new Set<Stage>(stages);
@@ -456,12 +542,11 @@ export async function GET(request: NextRequest, context: Context) {
   const phaseValues = Object.values(phaseResults);
   const terminalPhases = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus)).length;
   const progressStages = phaseValues.length;
-  const summary = {
+  const summary = ruleCoverage ? summarizeRuleCoverage(ruleCoverage) : {
     suspected: scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
     reviewNeeded: scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
-    notObserved: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_OBSERVED").length : 0,
-    notTested: ruleCoverage ? Object.values(ruleCoverage).filter(({ status }) => status === "NOT_TESTED").length
-      : active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
+    notObserved: 0,
+    notTested: active ? 0 : [...requiredStages].filter((stage) => !observedStages.has(stage)).length,
   };
   const surfaceObservations = ((storedReport as unknown as { surfaceObservations?: { kind: DiagnosticSurfaceKind; outcome: string }[] } | null)?.surfaceObservations ?? []);
   const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => {
@@ -498,18 +583,12 @@ export async function GET(request: NextRequest, context: Context) {
     const findings = report
       ? scan.findings.map((stored, index) => ({ ...(report.findings[index] ?? {}), id: stored.id, type: stored.type, status: stored.status, stage: stored.stage, reason: stored.reason, ruleVersion: stored.ruleVersion }))
       : scan.findings;
-    const aiReview = scan.aiReview ? {
-      id: scan.aiReview.id, status: scan.aiReview.status, requestedAt: scan.aiReview.requestedAt,
-      completedAt: scan.aiReview.completedAt, provider: scan.aiReview.provider, model: scan.aiReview.model,
-      candidateCount: scan.aiReview.candidateCount, durationMs: scan.aiReview.durationMs, error: scan.aiReview.error,
-      result: scan.aiReview.resultJson ? JSON.parse(scan.aiReview.resultJson) : null,
-      usage: scan.aiReview.usageJson ? JSON.parse(scan.aiReview.usageJson) : null,
-      operatorLabels: scan.aiReview.operatorLabelsJson ? JSON.parse(scan.aiReview.operatorLabelsJson) : null,
-    } : null;
+    const aiReview = serializeAiReview(scan.aiReview);
+    const aiReviewCandidateCount = report ? buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]).length : 0;
     const response = Response.json({ ...report, viewport: scan.viewport, purchasePath: scan.purchasePath,
       durationMs: scan.durationMs,
       comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, ruleCoverage, summary,
-      aiEligible: scan.shop?.plan === "PREMIUM", aiReview,
+      aiEligible: scan.shop?.plan === "PREMIUM", aiReviewCandidateCount, aiReview,
       findings });
     if (request.nextUrl.searchParams.get("download") === "1") {
       response.headers.set("Content-Disposition", `attachment; filename="baromi-${scan.id}.json"`);

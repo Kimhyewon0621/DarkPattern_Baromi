@@ -2,6 +2,29 @@
 
 백엔드 기능이나 API 계약이 바뀔 때마다 이 파일을 먼저 갱신하고, 프론트 팀에 변경 브랜치·커밋·영향받는 endpoint를 공유한다.
 
+## 2026-11-16
+
+### 기본 보고서 JSON 요약·AI 전달 경계 고정
+
+- 변경: `summary` 네 값(`suspected`, `reviewNeeded`, `notObserved`, `notTested`)을 `ruleCoverage`의 16개 최종 상태에서 계산한다. 발견 항목 수와 전체 유형 상태 수가 혼동되지 않게 하고, 종료 보고서에서는 네 값의 합이 16이다.
+- 변경: 관련 화면이 있어도 해당 유형의 맥락형 검토 후보가 실제 생성되지 않았다면 `REVIEW_NEEDED`로 추정하지 않고 `NOT_TESTED`와 사유를 반환한다.
+- 변경: 보고서의 유형 없는 사람 검토 메모와 `BASIC_ENGINE` 항목은 AI provider payload에서 제외한다. 근거가 연결된 `AI_CONTEXT` 8개 유형만 고정된 `ruleType`으로 요청한다. AI 응답의 `suggestedRule`도 해당 후보의 유형과 일치하는 값만 보존한다.
+- 변경: 보고서 JSON에 provider 전달 가능한 유형 지정 후보 수 `aiReviewCandidateCount`를, AI 요청 응답에 작업별 `candidateCount`를 추가했다.
+- 프론트 영향: 보고서 JSON의 `ruleCoverage`를 유형별 기준 원장으로 사용한다. `findings`는 발견 신호 상세이며 16개 전체 상태의 개수로 사용하지 않는다. AI 요청 버튼은 `aiEligible && aiReviewCandidateCount > 0`일 때만 노출하고, `aiReview.status`, 후보 수, 결과, 사용량을 보고서 JSON에서 표시한다.
+- 관련 endpoint: `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`, `POST /api/v1/scans/:scanId/ai-review`.
+- 검증: 타입 검사, 판정·요약·후보 payload 테스트 7개, 브라우저 진단→JSON 다운로드→유료 AI 요청→완료 왕복 1개 통과. AI 제공자는 테스트용 mock을 사용했다. Spring 권위 응답은 미검증이다.
+
+### 16개 판정 담당 및 맥락형 AI 후보 계약 추가
+
+- 변경: `ruleCoverage`의 각 항목에 `decisionMode`를 추가했다. 8개 유형은 `BASIC_ENGINE`, 맥락 해석이 필요한 8개 유형은 `AI_CONTEXT`로 구분한다.
+- 변경: 관련 증거가 수집된 맥락형 유형은 `reviewCandidates`에 고정 `ruleType`과 유형별 검토 질문을 담는다. 근거가 없는 유형은 AI 후보를 만들지 않고 `NOT_TESTED`로 남긴다.
+- 변경: 기본 엔진 판정기가 연결되지 않은 유형은 화면을 확보했더라도 그 사실과 증거 ID를 `NOT_TESTED` 사유로 공개한다. 해당 유형을 미발견으로 잘못 보고하지 않는다.
+- 영향 endpoint: `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`의 `ruleCoverage`, `reviewCandidates`; `POST /api/v1/scans/:scanId/ai-review` 입력 후보 데이터.
+- 프론트 영향: `decisionMode`를 판정 담당 표시로 사용할 수 있다. `AI_CONTEXT`의 `REVIEW_NEEDED`는 위험 확정이 아니며, AI 응답도 기본 사실·판정 상태를 덮어쓰지 않는다.
+- 프론트 영향: 보고서의 16개 행에서 판정 담당, 상태, 사유, 증거 ID를 표시할 수 있다. `BASIC_ENGINE` 유형의 `NOT_TESTED`는 현재 기본 판정기가 연결되지 않았다는 뜻일 수 있다.
+- 검증: 판정 계약 Playwright 테스트 통과. 로컬 브라우저 보고서·AI 요청 왕복 검증은 위 항목에 기록했다.
+- 관련 브랜치: `main` (현재 로컬 백엔드 작업 브랜치)
+
 ## 2026-11-15
 
 ### 문구만으로 위반 유형을 붙이던 휴리스틱 제거
@@ -169,6 +192,21 @@
 - 영향: Spring 권위 모드에서도 발견 목록이 SQLite 전환기 데이터로 대체되지 않는다.
 - 프론트 영향: 응답 형식은 기존과 동일하다.
 - 관련 커밋: `a95a905`.
+
+### 프론트 보고서 JSON 전달 계약 보강
+
+- 변경: `GET /api/v1/scans/:scanId/report`의 보고서 최상위 필드와 16개 유형 판정·증거·크롤링·AI 후속 검토 데이터의 용도를 명세했다. 프론트 전달용 대표 응답 JSON을 `docs/report-response.example.json`에 추가했다.
+- endpoint 변경: 없음. Spring 권위 모드도 저장된 보고서와 소유자별 플랜·AI 작업 정보를 합쳐 SQLite 모드의 동일한 보고서 JSON 형태로 정규화한다.
+- 프론트 영향: 보고서 UI는 응답의 `ruleCoverage`와 `summary`를 그대로 사용하고, 화면에서 상태를 다시 판정하지 않는다. 상세 증거는 각 `evidenceIds`와 대응하는 근거 배열을 연결한다.
+- 검증: 로컬 SQLite 모드에서 브라우저로 진단→보고서 열람·다운로드→무료 AI 요청 차단→유료 AI 요청·완료 JSON 확인까지 통과. Spring 정규화는 타입 검사를 통과했으며 Spring 서버 실연동은 별도 미검증이다.
+- 검증 범위: JSON 샘플은 데이터 구조 예시이며 실시간 진단 결과를 대체하지 않는다.
+
+### 강제 행동 판정에 인증 맥락 추가
+
+- 변경: 보고서 JSON에 계정 비밀정보가 없는 `authContext`(`ANONYMOUS|TEST_ACCOUNT|UNKNOWN`)를 추가했다. 익명 상태에서 주문서까지 도달한 경우에만 `FORCED_ACTION`을 해당 구매 경로의 `NOT_OBSERVED`로 기록하고, 테스트 계정 또는 불명확한 인증 맥락에서는 `NOT_TESTED`로 남긴다. 로그인 차단은 기존처럼 `SUSPECTED`와 차단 근거를 반환한다.
+- 영향 endpoint: `GET /api/v1/scans/:scanId/report` 응답의 `authContext` 필드.
+- 프론트 영향: 인증 맥락을 보고서의 검증 범위와 미검사 사유 설명에 활용할 수 있다.
+- 보안: 계정 이름·비밀번호·인증 토큰은 저장하거나 응답하지 않고 인증 경로 구분만 저장한다.
 
 ## 변경 기록 규칙
 

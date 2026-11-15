@@ -9,7 +9,7 @@ import { detect, type Snapshot } from "./rules";
 import { publicShopUrl } from "./targets";
 import { feeMentionsFromText } from "./price-text";
 import { startSafeBrowserProxy } from "./safe-browser-proxy";
-import { collectReviewCandidates } from "./review-candidates";
+import { collectReviewCandidates, collectRuleReviewCandidates } from "./review-candidates";
 import { structuredProductLinks } from "./structured-product-links";
 
 export type CollectionFailureCode =
@@ -81,7 +81,7 @@ export async function scanPublicShop(
     const partial = async (reason: string, code: CollectionFailureCode) => {
       const report = {
         comparisonVersion: scanComparisonVersion,
-        scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
+        scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath, authContext: "ANONYMOUS" as const,
         scenario: "public" as const, targetUrl, snapshots: [], priceLedger: buildPriceLedger([]), findings: [], reviewCandidates: [],
         collectionFailure: reason, collectionFailureCode: code,
       };
@@ -192,8 +192,8 @@ export async function scanPublicShop(
             const report = {
               comparisonVersion: scanComparisonVersion,
               scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
-              scenario: "public" as const, targetUrl, snapshots: [product],
-              priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: collectReviewCandidates([product]), collectionFailure: null, collectionFailureCode: null,
+              scenario: "public" as const, targetUrl, authContext: "ANONYMOUS" as const, snapshots: [product],
+              priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: [...collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] }), ...collectReviewCandidates([product])], collectionFailure: null, collectionFailureCode: null,
             };
             await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
             return report;
@@ -216,8 +216,8 @@ export async function scanPublicShop(
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: "PARTIAL" as const, executionMode: "STATIC" as const, viewport, purchasePath,
-      scenario: "public" as const, targetUrl,
-      snapshots: [product], priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: collectReviewCandidates([product]), collectionFailure: null, collectionFailureCode: null,
+      scenario: "public" as const, targetUrl, authContext: "ANONYMOUS" as const,
+      snapshots: [product], priceLedger: buildPriceLedger([product], [], firstPriceExposure), findings: detect([product]), reviewCandidates: [...collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] }), ...collectReviewCandidates([product])], collectionFailure: null, collectionFailureCode: null,
     };
     await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
     return report;

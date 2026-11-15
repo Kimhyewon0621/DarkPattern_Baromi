@@ -10,7 +10,7 @@ import { scanComparisonVersion } from "./scan-comparison";
 import { detect, type InteractionEvidence, type Snapshot } from "./rules";
 import { detectForcedAction } from "./detectors/interaction-patterns";
 import { feeMentionsFromText } from "./price-text";
-import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
+import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectRuleReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
 import { classifyReviewCandidates } from "./review-classifier";
 import { structuredProductLinks } from "./structured-product-links";
 import type { TestCredentials } from "./credential-vault";
@@ -118,6 +118,7 @@ export async function scanDynamicPublicShop(
     if (!response?.ok()) throw new Error("쇼핑몰 첫 화면을 불러오지 못했습니다.");
     await waitForDomQuiet(page);
     let authenticationObservation: SurfaceObservation | null = null;
+    let authenticatedWithTestAccount = false;
     let preAuthenticationPage: CrawledSitePage | null = null;
     if (credentials && await openLoginForm(page)) {
       // Login overlays can contain preselected consent and renewal controls.
@@ -127,6 +128,7 @@ export async function scanDynamicPublicShop(
         statePath: ["로그인 화면 (인증 전)"],
       });
       await submitLoginForm(page, credentials);
+      authenticatedWithTestAccount = true;
       authenticationObservation = {
         evidenceId: "surface:auth:test-account", kind: "AUTH", url: page.url(), status: response.status(),
         title: "테스트 계정 로그인", text: "승인된 테스트 계정으로 로그인 화면을 제출하고 인증 후 화면에 도달했습니다.",
@@ -425,13 +427,16 @@ export async function scanDynamicPublicShop(
         evidenceIds: observations.map(({ evidenceId }) => evidenceId),
       });
     }
-    const reviewCandidates = [...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)];
+    // Put typed rule questions first: AI payloads are bounded, so generic
+    // screen notes must not crowd out the eight contextual rule candidates.
+    const reviewCandidates = [...collectRuleReviewCandidates({ snapshots, surfaces: surfaceObservations, crawlPages: siteCrawl.pages }), ...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)].slice(0, 40);
     const findings = [...detect(snapshots, firstPriceExposure?.feeMentions), ...detectForcedAction(journey.blocker ?? null, snapshots)];
-    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, reviewCandidates });
+    const authContext = authenticatedWithTestAccount ? "TEST_ACCOUNT" as const : "ANONYMOUS" as const;
+    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, reviewCandidates, authContext });
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: dynamicScanStatus(journey.reached, journey.blocker ?? null, siteCrawl.complete),
-      executionMode: "DYNAMIC" as const, viewport, purchasePath, scenario: "public" as const, targetUrl, snapshots, interactions,
+      executionMode: "DYNAMIC" as const, viewport, purchasePath, scenario: "public" as const, targetUrl, authContext, snapshots, interactions,
       explorationBlocker: journey.blocker ?? null,
       surfaceDestinations: journey.surfaceDestinations,
       surfaceObservations,

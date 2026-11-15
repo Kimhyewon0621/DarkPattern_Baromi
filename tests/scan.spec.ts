@@ -23,7 +23,7 @@ test("AI를 호출하지 않은 진단은 비용을 0으로 계측한다", async
 
 test("AI 후보 payload는 개인정보를 가리고 연결된 구매 증거만 제한해 전달한다", () => {
   const payload = buildAiCandidatePayload({
-    reviewCandidates: [{ id: "c1", kind: "EXPLORATION_UNVERIFIED", stage: "surface", text: "문의 test@example.com", reason: "연락처 010-1234-5678", evidenceIds: ["e1", "missing"] }],
+    reviewCandidates: [{ id: "c1", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "URGENCY_SCARCITY", text: "문의 test@example.com", reason: "연락처 010-1234-5678", evidenceIds: ["e1", "missing"] }],
     snapshots: [{ evidenceId: "e1", stage: "product", url: "https://shop.test/p/1?token=secret", priceLines: Array.from({ length: 30 }, (_, i) => `${i}원`), options: Array.from({ length: 30 }, () => ({ label: "옵션" })), precheckedSignals: ["signal"], surfaceSignals: ["surface"] }],
   });
   expect(payload).toHaveLength(1);
@@ -38,8 +38,8 @@ test("AI 후보 payload는 개인정보를 가리고 연결된 구매 증거만 
 test("AI 후보 payload는 크롤링·표면 근거를 연결하고 URL 쿼리와 개인정보를 제거한다", () => {
   const payload = buildAiCandidatePayload({
     reviewCandidates: [
-      { id: "crawl", kind: "EXPLORATION_UNVERIFIED", stage: "surface", text: "04:45 특가 종료 test@example.com", reason: "타이머 문구", evidenceIds: ["crawl-1"] },
-      { id: "surface", kind: "SURFACE_FLOW", stage: "surface", text: "로그인", reason: "인증 화면", evidenceIds: ["surface-1"] },
+      { id: "crawl", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "URGENCY_SCARCITY", text: "04:45 특가 종료 test@example.com", reason: "타이머 문구", evidenceIds: ["crawl-1"] },
+      { id: "surface", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "HIDDEN_INFO", text: "로그인", reason: "인증 화면", evidenceIds: ["surface-1"] },
     ],
     siteCrawl: { pages: [{
       evidenceId: "crawl-1", url: "https://shop.test/promo?token=secret#top", discoveredFrom: null, depth: 1, statePath: [], status: 200, outcome: "OBSERVED",
@@ -61,7 +61,7 @@ test("AI 후보 payload는 크롤링·표면 근거를 연결하고 URL 쿼리�
 
 test("AI 공급자에는 내부 증거 ID를 보내지 않고 응답 후보를 원래 보고서에 연결한다", () => {
   const candidates = buildAiCandidatePayload({
-    reviewCandidates: [{ id: "review:private@example.com", kind: "SURFACE_FLOW", stage: "surface", text: "로그인", reason: "검토", evidenceIds: ["surface:/member/private@example.com"] }],
+    reviewCandidates: [{ id: "review:private@example.com", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "HIDDEN_SUBSCRIPTION", text: "로그인", reason: "검토", evidenceIds: ["surface:/member/private@example.com"] }],
     surfaceObservations: [{ evidenceId: "surface:/member/private@example.com", kind: "AUTH", url: "https://shop.test/member", status: 200, title: "로그인", text: "로그인", outcome: "OBSERVED" }],
   });
   const providerCandidates = toAiProviderCandidates(candidates);
@@ -1106,6 +1106,54 @@ test("크롤한 MEGA 유형별 화면 증거가 16개 규칙 보고서의 검토
   expect(candidates).toEqual([expect.objectContaining({ kind: "SEMANTIC_REVIEW", evidenceIds: ["site-page:mega-checkout"] })]);
 });
 
+test("관련 화면을 수집한 맥락형 유형은 해당 유형이 고정된 AI 검토 후보와 보고서 상태를 만든다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const { buildRuleCoverage } = await import("../src/rule-coverage");
+  const product = {
+    evidenceId: "evidence:product", stage: "product" as const, url: "https://shop.example.com/product",
+    screenshot: "product.png", priceLines: ["정가 100,000원", "판매가 50,000원"], textLines: ["남은 시간 04:45"], options: [], fees: [],
+  };
+  const candidates = collectRuleReviewCandidates({ snapshots: [product], surfaces: [], crawlPages: [] });
+  expect(candidates.map(({ ruleType }) => ruleType)).toEqual(expect.arrayContaining(["URGENCY_SCARCITY", "FALSE_DISCOUNT", "HIDDEN_INFO"]));
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [product], reviewCandidates: candidates });
+  expect(coverage.URGENCY_SCARCITY).toMatchObject({ status: "REVIEW_NEEDED", decisionMode: "AI_CONTEXT", evidenceIds: ["evidence:product"] });
+  expect(coverage.FALSE_DISCOUNT.status).toBe("REVIEW_NEEDED");
+  expect(coverage.HIDDEN_SUBSCRIPTION).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] });
+  expect(coverage.PRESELECTION.decisionMode).toBe("BASIC_ENGINE");
+});
+
+test("관련 화면 증거가 없으면 맥락형 AI 후보를 만들지 않고 미검사로 둔다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const candidates = collectRuleReviewCandidates({ snapshots: [], surfaces: [], crawlPages: [] });
+  expect(candidates).toEqual([]);
+  expect(buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates }).URGENCY_SCARCITY.status).toBe("NOT_TESTED");
+});
+
+test("맥락형 8개 규칙만 유형을 고정해 AI payload로 전달한다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
+  const { buildAiCandidatePayload } = await import("../src/ai-review-payload");
+  const checkout = {
+    evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [],
+  };
+  const product = {
+    evidenceId: "evidence:product", stage: "product" as const, url: "https://shop.example.com/product",
+    screenshot: "product.png", priceLines: [], textLines: [], options: [], fees: [],
+  };
+  const observations = ["RECOMMENDATION", "SUBSCRIPTION"].map((kind) => ({
+    evidenceId: `surface:${kind.toLowerCase()}`, kind: kind as "RECOMMENDATION" | "SUBSCRIPTION",
+    url: `https://shop.example.com/${kind.toLowerCase()}`, status: 200, title: kind, text: `${kind} 관찰`, outcome: "OBSERVED" as const,
+  }));
+  const snapshots = [product, checkout];
+  const candidates = collectRuleReviewCandidates({ snapshots, surfaces: observations, crawlPages: [] });
+  const payload = buildAiCandidatePayload({ reviewCandidates: candidates, snapshots, surfaceObservations: observations });
+  expect(new Set(payload.map(({ ruleType }) => ruleType))).toEqual(new Set([
+    "URGENCY_SCARCITY", "HIDDEN_INFO", "FALSE_DISCOUNT", "DISGUISED_AD",
+    "CONFIRM_SHAMING", "HIDDEN_SUBSCRIPTION", "FALSE_RECOMMENDATION", "TRICK_QUESTION",
+  ]));
+  expect(payload.every(({ evidence }) => evidence.length > 0)).toBe(true);
+});
+
 test("실패한 해지 경로는 구독이 있어도 미검사 검토 후보로 남긴다", async () => {
   const { collectSurfaceReviewCandidates } = await import("../src/review-candidates");
   const candidates = collectSurfaceReviewCandidates([
@@ -1157,6 +1205,26 @@ test("16개 유형별 상태는 증거가 없는 항목을 미발견이 아닌 �
   expect(coverage.CANCELLATION_OBSTRUCTION.status).toBe("NOT_TESTED");
 });
 
+test("보고서 요약은 발견 항목 수가 아니라 16개 유형별 최종 상태를 센다", async () => {
+  const { summarizeRuleCoverage } = await import("../src/rule-coverage");
+  const checkout = { evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [], decisionControls: [] };
+  const candidates = [{ id: "review:confirm", kind: "SEMANTIC_REVIEW" as const, stage: "surface" as const, ruleType: "CONFIRM_SHAMING" as const, text: "문구 검토", reason: "맥락 판단", evidenceIds: ["evidence:checkout"] }];
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [checkout], reviewCandidates: candidates });
+  expect(summarizeRuleCoverage(coverage)).toEqual({ suspected: 0, reviewNeeded: 1, notObserved: 0, notTested: 15 });
+});
+
+test("AI provider payload에는 증거가 연결된 맥락형 유형만 포함하고 일반 메모와 기본 엔진 후보는 제외한다", () => {
+  const payload = buildAiCandidatePayload({
+    reviewCandidates: [
+      { id: "context", kind: "SEMANTIC_REVIEW", stage: "surface", ruleType: "URGENCY_SCARCITY", text: "타이머", reason: "맥락 확인", evidenceIds: ["e1"] },
+      { id: "basic", kind: "SEMANTIC_REVIEW", stage: "product", ruleType: "PRESELECTION", text: "선택 상태", reason: "규칙 판정", evidenceIds: ["e1"] },
+      { id: "untyped", kind: "EXPLORATION_UNVERIFIED", stage: "surface", text: "일반 메모", reason: "경로 확인", evidenceIds: ["e1"] },
+    ],
+    snapshots: [{ evidenceId: "e1", stage: "product", url: "https://shop.test/product", priceLines: [], textLines: ["타이머"], options: [], fees: [] }],
+  });
+  expect(payload.map(({ id, ruleType }) => ({ id, ruleType }))).toEqual([{ id: "context", ruleType: "URGENCY_SCARCITY" }]);
+});
+
 test("수락·거부 문구와 실제 크기는 유형을 추정하지 않고 검토 근거로 보존한다", async () => {
   const { collectReviewCandidates } = await import("../src/review-candidates");
   const { buildRuleCoverage } = await import("../src/rule-coverage");
@@ -1185,21 +1253,48 @@ test("로그인 차단은 강제행동 확정이 아니라 근거가 있는 검�
   };
   const blocker = { stage: "product" as const, code: "LOGIN_REQUIRED" as const, action: "ADD_TO_CART" as const, candidateCount: 0 };
   expect(detectForcedAction(blocker, [snapshot])).toEqual([
-    expect.objectContaining({ type: "FORCED_ACTION", status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] }),
+    expect.objectContaining({ type: "FORCED_ACTION", status: "SUSPECTED", evidenceIds: ["evidence:product"] }),
   ]);
   expect(detectForcedAction({ ...blocker, code: "ACTION_NOT_FOUND" }, [snapshot])).toEqual([]);
 });
 
-test("선택지 구조를 실제 검사한 깨끗한 주문서는 계층·강제행동 유형의 미발견 근거가 된다", () => {
+test("강제행동은 비회원 주문서 도달 때만 미발견하고 테스트 계정 흐름은 미검사로 남긴다", () => {
+  const checkout = {
+    evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: [], options: [], fees: [],
+  };
+  const anonymous = buildRuleCoverage({ findings: [], snapshots: [checkout], authContext: "ANONYMOUS" });
+  const signedIn = buildRuleCoverage({ findings: [], snapshots: [checkout], authContext: "TEST_ACCOUNT" });
+  expect(anonymous.FORCED_ACTION).toMatchObject({
+    status: "NOT_OBSERVED", evidenceIds: ["evidence:checkout"], reason: expect.stringContaining("비회원 상태"),
+  });
+  expect(signedIn.FORCED_ACTION).toMatchObject({
+    status: "NOT_TESTED", evidenceIds: ["evidence:checkout"], reason: expect.stringContaining("비회원 구매"),
+  });
+});
+
+test("선택지 화면을 수집해도 맥락 유형은 검토로, 연결되지 않은 기본 유형은 미검사로 둔다", () => {
   const checkout = {
     evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
     screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [], decisionControls: [],
   };
-  const coverage = buildRuleCoverage({ findings: [], snapshots: [checkout], surfaceObservations: [] });
-  expect(coverage.CONFIRM_SHAMING.status).toBe("NOT_OBSERVED");
-  expect(coverage.TRICK_QUESTION.status).toBe("NOT_OBSERVED");
-  expect(coverage.MISDIRECTED_HIERARCHY.status).toBe("NOT_OBSERVED");
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [checkout], surfaceObservations: [], reviewCandidates: [
+    { id: "review:confirm", kind: "SEMANTIC_REVIEW", stage: "checkout", ruleType: "CONFIRM_SHAMING", text: "거부 선택 문구", reason: "표현 맥락 확인", evidenceIds: ["evidence:checkout"] },
+    { id: "review:trick", kind: "SEMANTIC_REVIEW", stage: "checkout", ruleType: "TRICK_QUESTION", text: "동의 질문", reason: "질문과 선택 결과 확인", evidenceIds: ["evidence:checkout"] },
+  ] });
+  expect(coverage.CONFIRM_SHAMING.status).toBe("REVIEW_NEEDED");
+  expect(coverage.TRICK_QUESTION.status).toBe("REVIEW_NEEDED");
+  expect(coverage.MISDIRECTED_HIERARCHY).toMatchObject({ status: "NOT_TESTED", reason: expect.stringContaining("판정기를 아직 연결") });
   expect(coverage.FORCED_ACTION.status).toBe("NOT_TESTED");
+});
+
+test("보고서 판정 계약은 16개 유형에 담당 8대8과 유효 상태를 빠짐없이 반환한다", () => {
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: [] });
+  const values = Object.values(coverage);
+  expect(values).toHaveLength(16);
+  expect(values.filter(({ decisionMode }) => decisionMode === "BASIC_ENGINE")).toHaveLength(8);
+  expect(values.filter(({ decisionMode }) => decisionMode === "AI_CONTEXT")).toHaveLength(8);
+  expect(values.every(({ status }) => ["SUSPECTED", "REVIEW_NEEDED", "NOT_OBSERVED", "NOT_TESTED"].includes(status))).toBe(true);
 });
 
 test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발견으로 뭉개지 않는다", () => {
@@ -1210,11 +1305,11 @@ test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발
     { evidenceId: "surface:cancellation:1", kind: "CANCELLATION" as const, url: "https://shop.example.com/cancel", status: 200, title: "해지", text: "해지 신청", outcome: "OBSERVED" as const },
   ];
   const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: observations });
-  expect(coverage.DISGUISED_AD).toMatchObject({ status: "NOT_TESTED", evidenceIds: ["surface:recommendation:1"] });
-  expect(coverage.FALSE_RECOMMENDATION.status).toBe("NOT_TESTED");
+  expect(coverage.DISGUISED_AD).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["surface:recommendation:1"] });
+  expect(coverage.FALSE_RECOMMENDATION.status).toBe("REVIEW_NEEDED");
   expect(coverage.BAIT_SELLING).toMatchObject({ status: "NOT_TESTED", evidenceIds: ["surface:catalog:1"] });
   expect(coverage.CANCELLATION_OBSTRUCTION).toMatchObject({
-    status: "REVIEW_NEEDED", evidenceIds: ["surface:subscription:1", "surface:cancellation:1"],
+    status: "NOT_TESTED", evidenceIds: ["surface:subscription:1", "surface:cancellation:1"],
   });
 });
 

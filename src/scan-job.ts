@@ -115,6 +115,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         report = {
           comparisonVersion: scanComparisonVersion,
           scanStatus: "PARTIAL" as const, executionMode: "DYNAMIC" as const,
+          authContext: "UNKNOWN" as const,
           viewport: requested.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
           purchasePath: requested.purchasePath === "DIRECT" ? "DIRECT" as const : "CART" as const,
           scenario: "public" as const, targetUrl, snapshots: [], interactions: [],
@@ -227,6 +228,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         comparisonVersion: scanComparisonVersion,
         scanStatus: "FAILED" as const,
         executionMode: existing.executionMode,
+        authContext: "UNKNOWN" as const,
         viewport: existing.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
         purchasePath,
         scenario: existing.scenario,

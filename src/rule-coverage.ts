@@ -2,13 +2,29 @@ import { legalRules } from "./legal-rules";
 import type { Finding, Snapshot } from "./rules";
 import type { SurfaceObservation } from "./purchase-journey";
 import type { ReviewCandidate } from "./review-candidates";
+import { ruleDecisionModes, type RuleDecisionMode } from "./rule-strategy";
+
+const completeEngineRules = new Set<keyof typeof legalRules>(["PRESELECTION", "DRIP_PRICING", "SNEAKY_CART_ADD"]);
 
 export type RuleCoverageStatus = "SUSPECTED" | "REVIEW_NEEDED" | "NOT_OBSERVED" | "NOT_TESTED";
-export type RuleCoverage = Record<keyof typeof legalRules, {
+export type RuleCoverageResult = {
   status: RuleCoverageStatus;
+  decisionMode: RuleDecisionMode;
   reason: string;
   evidenceIds: string[];
-}>;
+};
+export type RuleCoverage = Record<keyof typeof legalRules, RuleCoverageResult>;
+export type RuleCoverageSummary = { suspected: number; reviewNeeded: number; notObserved: number; notTested: number };
+
+export function summarizeRuleCoverage(coverage: RuleCoverage): RuleCoverageSummary {
+  return Object.values(coverage).reduce<RuleCoverageSummary>((summary, result) => {
+    if (result.status === "SUSPECTED") summary.suspected++;
+    else if (result.status === "REVIEW_NEEDED") summary.reviewNeeded++;
+    else if (result.status === "NOT_OBSERVED") summary.notObserved++;
+    else summary.notTested++;
+    return summary;
+  }, { suspected: 0, reviewNeeded: 0, notObserved: 0, notTested: 0 });
+}
 
 type Input = {
   findings: Finding[];
@@ -16,11 +32,12 @@ type Input = {
   surfaceObservations?: SurfaceObservation[];
   siteCrawlComplete?: boolean;
   reviewCandidates?: ReviewCandidate[];
+  authContext?: "ANONYMOUS" | "TEST_ACCOUNT" | "UNKNOWN";
 };
 
 const ids = (snapshots: Snapshot[]) => snapshots.map((item) => item.evidenceId ?? `evidence:${item.stage}`);
 
-export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], siteCrawlComplete = false, reviewCandidates = [] }: Input): RuleCoverage {
+export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], siteCrawlComplete = false, reviewCandidates = [], authContext = "UNKNOWN" }: Input): RuleCoverage {
   const findingByType = new Map(findings.map((finding) => [finding.type, finding]));
   const stages = new Set(snapshots.map(({ stage }) => stage));
   const observedSurfaces = new Set(surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ kind }) => kind));
@@ -52,11 +69,6 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     CANCELLATION_OBSTRUCTION: { stages: [], surfaces: ["SUBSCRIPTION", "CANCELLATION"] },
     PRICE_COMPARISON_OBSTRUCTION: { stages: ["product", "checkout"] },
   };
-  const semanticReviewRequired = new Set<keyof typeof legalRules>([
-    "URGENCY_SCARCITY", "HIDDEN_INFO", "FALSE_DISCOUNT", "DISGUISED_AD", "CONFIRM_SHAMING",
-    "FORCED_ACTION", "HIDDEN_SUBSCRIPTION", "FALSE_RECOMMENDATION", "BAIT_SELLING",
-    "TRICK_QUESTION", "MISDIRECTED_HIERARCHY", "CANCELLATION_OBSTRUCTION", "PRICE_COMPARISON_OBSTRUCTION",
-  ]);
   const evidenceFor = (type: keyof typeof legalRules) => {
     const requirement = requirements[type];
     const stageIds = snapshots.filter(({ stage }) => requirement.stages.includes(stage)).map((item) => item.evidenceId ?? `evidence:${item.stage}`);
@@ -66,7 +78,7 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     return [...new Set([...stageIds, ...surfaceIds, ...controlIds])].slice(0, 20);
   };
 
-  return Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => {
+  const results = Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => {
     const finding = findingByType.get(type);
     if (finding) return [type, {
       status: finding.status, reason: finding.reason,
@@ -81,8 +93,8 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
       const subscription = observedSurface("SUBSCRIPTION");
       const cancellation = observedSurface("CANCELLATION");
       if (subscription.length && cancellation.length) return [type, {
-        status: "REVIEW_NEEDED" as const,
-        reason: "구독과 해지 화면은 찾았지만 실제 단계 수와 접근성을 비교하지 않았습니다. 두 경로를 직접 대조하세요.",
+        status: "NOT_TESTED" as const,
+        reason: "구독과 해지 화면은 찾았지만 실제 단계 수와 접근성을 비교할 판정기를 아직 연결하지 않았습니다.",
         evidenceIds: [...subscription, ...cancellation].map(({ evidenceId }) => evidenceId),
       }];
     }
@@ -100,15 +112,28 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
         evidenceIds: evidenceFor(type),
       }];
     }
-    const inspectedControls = requiredControls.length > 0 && requiredControls.every((stage) =>
-      snapshots.some((snapshot) => snapshot.stage === stage && snapshot.decisionControls !== undefined),
-    );
-    const controlsPresent = requiredControls.some((stage) =>
-      snapshots.some((snapshot) => snapshot.stage === stage && (snapshot.decisionControls?.length ?? 0) > 0),
-    );
-    if (semanticReviewRequired.has(type) && (!inspectedControls || controlsPresent)) return [type, {
+    if (type === "FORCED_ACTION") {
+      if (authContext === "ANONYMOUS") return [type, {
+        status: "NOT_OBSERVED" as const,
+        reason: "비회원 상태로 주문서 화면까지 도달했고 로그인·가입 차단이 관찰되지 않았습니다.",
+        evidenceIds: evidenceFor(type),
+      }];
+      return [type, {
+        status: "NOT_TESTED" as const,
+        reason: authContext === "TEST_ACCOUNT"
+          ? "테스트 계정으로 주문서에 도달해 비회원 구매에서 인증을 강제하는지는 확인하지 못했습니다."
+          : "주문서 화면은 확보했지만 비회원 또는 테스트 계정 경로인지 확인할 수 없습니다.",
+        evidenceIds: evidenceFor(type),
+      }];
+    }
+    if (ruleDecisionModes[type] === "BASIC_ENGINE" && !completeEngineRules.has(type)) return [type, {
       status: "NOT_TESTED" as const,
-      reason: "화면 증거는 수집했지만 문구·맥락의 의미를 자동 판정하지 않았습니다. 근거 검토가 필요합니다.",
+      reason: "필요한 화면은 수집했지만 이 유형의 기본 엔진 판정기를 아직 연결하지 않았습니다.",
+      evidenceIds: evidenceFor(type),
+    }];
+    if (ruleDecisionModes[type] === "AI_CONTEXT") return [type, {
+      status: "NOT_TESTED" as const,
+      reason: "필요 화면은 확보했지만 유형이 지정된 AI 검토 후보가 없어 맥락 검토를 요청하지 못했습니다.",
       evidenceIds: evidenceFor(type),
     }];
     return [type, {
@@ -116,5 +141,8 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
       reason: "검사한 범위에서 이 유형의 신호가 관찰되지 않았습니다.",
       evidenceIds: allEvidenceIds,
     }];
-  })) as RuleCoverage;
+  })) as Record<keyof typeof legalRules, Omit<RuleCoverageResult, "decisionMode">>;
+  return Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => [type, {
+    ...results[type], decisionMode: ruleDecisionModes[type],
+  }])) as RuleCoverage;
 }

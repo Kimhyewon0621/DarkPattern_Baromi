@@ -1,7 +1,8 @@
 import type { CrawledSitePage } from "./site-crawler";
 import type { SurfaceObservation } from "./purchase-journey";
+import { contextualRuleTypes } from "./rule-strategy";
 
-export type ReviewCandidate = { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[] };
+export type ReviewCandidate = { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string };
 export type SnapshotEvidence = { evidenceId?: string; stage?: string; url?: string; priceLines?: string[]; textLines?: string[]; options?: unknown[]; fees?: unknown[]; precheckedSignals?: unknown[]; surfaceSignals?: unknown[]; decisionControls?: unknown[] };
 export type ReviewEvidence = {
   evidenceId: string;
@@ -95,10 +96,10 @@ function surfaceEvidence(item: SurfaceObservation): ReviewEvidence {
 }
 
 export function buildAiCandidatePayload(report: {
-  reviewCandidates?: ReviewCandidate[];
-  snapshots?: SnapshotEvidence[];
-  siteCrawl?: { pages?: CrawledSitePage[] };
-  surfaceObservations?: SurfaceObservation[];
+  reviewCandidates?: readonly ReviewCandidate[];
+  snapshots?: readonly SnapshotEvidence[];
+  siteCrawl?: { pages?: readonly CrawledSitePage[] };
+  surfaceObservations?: readonly SurfaceObservation[];
 }): AiCandidatePayload[] {
   const evidenceById = new Map<string, ReviewEvidence>();
   for (const item of report.snapshots ?? []) {
@@ -108,7 +109,12 @@ export function buildAiCandidatePayload(report: {
   for (const item of report.siteCrawl?.pages ?? []) evidenceById.set(item.evidenceId, { evidenceId: item.evidenceId, source: "crawl_page" });
   for (const item of report.surfaceObservations ?? []) evidenceById.set(item.evidenceId, surfaceEvidence(item));
 
-  return (report.reviewCandidates ?? []).slice(0, 40).flatMap((item) => {
+  // Untyped operator notes and BASIC_ENGINE rules remain visible in the
+  // report/dataset, but only the eight explicitly contextual rules may reach
+  // the paid AI provider.
+  return (report.reviewCandidates ?? []).filter((item) =>
+    item.ruleType && contextualRuleTypes.includes(item.ruleType as (typeof contextualRuleTypes)[number]),
+  ).slice(0, 40).flatMap((item) => {
     const evidence = item.evidenceIds.slice(0, 4).flatMap((id) => {
       const resolved = evidenceById.get(id);
       if (!resolved) return [];

@@ -1,6 +1,8 @@
 import type { Finding, Snapshot } from "./rules";
 import type { SurfaceObservation } from "./purchase-journey";
 import type { CrawledSitePage } from "./site-crawler";
+import { legalRules } from "./legal-rules";
+import { contextualRuleTypes, type RuleType } from "./rule-strategy";
 
 export type ReviewCandidate = {
   id: string;
@@ -11,6 +13,27 @@ export type ReviewCandidate = {
   evidenceIds: string[];
   ruleType?: Finding["type"];
 };
+
+/** Maps evidence to the rule questions it can inform without interpreting the
+ * merchant's wording as proof of a violation. AI receives these as review
+ * questions; it may return insufficient evidence and never overwrites facts. */
+type EvidenceQuestion = {
+  stages?: Snapshot["stage"][];
+  surfaces?: SurfaceObservation["kind"][];
+  crawl?: boolean;
+  reason: string;
+};
+
+const evidenceQuestions = {
+  URGENCY_SCARCITY: { stages: ["product"], crawl: true, reason: "긴급성·희소성 표현의 실제 근거와 표시 맥락을 확인해야 합니다." },
+  HIDDEN_INFO: { stages: ["product", "cart", "checkout"], crawl: true, reason: "중요 조건의 표시 위치·가독성·누락 여부를 화면 맥락에서 검토해야 합니다." },
+  FALSE_DISCOUNT: { stages: ["product"], crawl: true, reason: "표시된 할인 기준 가격의 실제 이력은 화면만으로 검증할 수 없습니다." },
+  DISGUISED_AD: { surfaces: ["RECOMMENDATION"], crawl: true, reason: "추천·콘텐츠와 광고 표시의 관계를 화면 맥락에서 검토해야 합니다." },
+  CONFIRM_SHAMING: { stages: ["checkout"], crawl: true, reason: "선택지 문구가 거부를 감정적으로 압박하는지 검토해야 합니다." },
+  HIDDEN_SUBSCRIPTION: { stages: ["product", "checkout"], surfaces: ["SUBSCRIPTION"], crawl: true, reason: "체험·자동 갱신·청구 조건의 고지 맥락을 검토해야 합니다." },
+  FALSE_RECOMMENDATION: { surfaces: ["RECOMMENDATION"], crawl: true, reason: "추천·인기·후기의 표시와 실제 산정 근거를 대조해야 합니다." },
+  TRICK_QUESTION: { stages: ["checkout"], crawl: true, reason: "질문·동의 문구와 실제 선택 결과가 일치하는지 맥락을 검토해야 합니다." },
+} satisfies Record<(typeof contextualRuleTypes)[number], EvidenceQuestion>;
 
 const reviewReason = "관찰 내용은 수집했지만, 의미와 맥락을 자동으로 확정하지 않았습니다. 근거 화면을 검토해야 합니다.";
 
@@ -86,4 +109,40 @@ export function collectSurfaceReviewCandidates(observations: SurfaceObservation[
     evidenceIds: [subscription.evidenceId],
   });
   return candidates;
+}
+
+/** Create typed AI-review candidates only when relevant evidence was actually
+ * observed. A broad crawl page can supply context, but absence of an observed
+ * screen never becomes evidence of absence. */
+export function collectRuleReviewCandidates(input: {
+  snapshots: Snapshot[];
+  surfaces: SurfaceObservation[];
+  crawlPages: CrawledSitePage[];
+}): ReviewCandidate[] {
+  const candidates: ReviewCandidate[] = [];
+  for (const [ruleType, question] of Object.entries(evidenceQuestions) as [RuleType, EvidenceQuestion][]) {
+    const relevantIds = new Set<string>();
+    for (const snapshot of input.snapshots) {
+      if (question.stages?.includes(snapshot.stage)) relevantIds.add(snapshot.evidenceId ?? `evidence:${snapshot.stage}`);
+    }
+    for (const surface of input.surfaces) {
+      if (surface.outcome === "OBSERVED" && question.surfaces?.includes(surface.kind)) relevantIds.add(surface.evidenceId);
+    }
+    if (!relevantIds.size) continue;
+    if (question.crawl) {
+      for (const page of input.crawlPages) if (page.outcome === "OBSERVED") relevantIds.add(page.evidenceId);
+    }
+    const evidenceIds = [...relevantIds].slice(0, 4);
+    candidates.push({
+      id: `review:rule:${ruleType.toLowerCase()}`, kind: "SEMANTIC_REVIEW", stage: "surface",
+      ruleType, evidenceIds,
+      text: `검토 질문: ${legalRuleTitle(ruleType)}. 제공된 관찰에서 이 유형을 뒷받침하거나 반박하는 사실과 부족한 정보를 구분하세요.`,
+      reason: question.reason,
+    });
+  }
+  return candidates;
+}
+
+function legalRuleTitle(type: Finding["type"]) {
+  return legalRules[type].title;
 }
