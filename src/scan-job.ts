@@ -64,13 +64,13 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
       const recordPhase = async (phaseId: ScanPhaseId, status: ScanPhaseStatus, details: { reason?: string; evidenceIds?: string[] } = {}) => {
         phases = updateScanPhase(phases, phaseId, { status, ...details });
         await store.scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: `${phaseId}:${status}` } });
+        void notifySpringScanStatus(id, "running", `${phaseId}:${status}`, undefined, phases);
         await callbacks.onPhase?.(phaseId, status, details);
       };
       const onStage = async (snapshot: { stage: string; evidenceId?: string }) => {
         const stage = snapshot.stage as ScanPhaseId;
         const scan = await store.scan.update({ where: { id }, data: { progress: ++progress } });
         await recordPhase(stage, "RUNNING", snapshot.evidenceId ? { evidenceIds: [...(phases[stage]?.evidenceIds ?? []), snapshot.evidenceId] } : {});
-        await notifySpringScanStatus(id, "running", snapshot.stage);
         if (scan.cancelRequested) throw new Error("진단 중단");
       };
       let report;
@@ -181,7 +181,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         },
       });
       await store.scan.update({ where: { id }, data: { credentialCiphertext: null } });
-      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : "partial", undefined, JSON.stringify(report));
+      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : "partial", undefined, JSON.stringify(report), phases);
       return finished.reportPath;
     } finally {
       clearTimeout(timeout);
@@ -201,13 +201,17 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
           initialScanPhases(scan.purchasePath === "DIRECT" ? "DIRECT" : "CART", scan.executionMode === "DYNAMIC")));
         await store.scan.update({ where: { id }, data: { phaseResultsJson: JSON.stringify(phases), currentStage: "CANCELLED" } }).catch(() => undefined);
       }
-      await notifySpringScanStatus(id, "cancelled"); return null;
+      const cancelledScan = await store.scan.findUnique({ where: { id }, select: { phaseResultsJson: true } }).catch(() => null);
+      const cancelledPhases = cancelledScan?.phaseResultsJson ? JSON.parse(cancelledScan.phaseResultsJson) as Record<string, unknown> : undefined;
+      await notifySpringScanStatus(id, "cancelled", undefined, undefined, cancelledPhases); return null;
     }
     const message = error instanceof Error ? error.message : "진단 처리 중 알 수 없는 오류가 발생했습니다.";
     const existing = await store.scan.findUnique({
       where: { id },
       select: { status: true, scenario: true, executionMode: true, viewport: true, purchasePath: true, targetUrl: true, phaseResultsJson: true },
     }).catch(() => null);
+    let failedPhasesForMirror: Record<string, unknown> | undefined;
+    let failedReportForMirror: string | undefined;
     if (existing?.status === "RUNNING") {
       const dynamic = existing.executionMode === "DYNAMIC";
       const purchasePath = existing.purchasePath === "DIRECT" ? "DIRECT" : "CART";
@@ -233,6 +237,8 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         phaseResults: phases,
       };
       const failedReport = { ...failedReportBase, ruleCoverage: buildRuleCoverage(failedReportBase) };
+      failedPhasesForMirror = phases;
+      failedReportForMirror = JSON.stringify(failedReport);
       const reportPath = join(evidenceDirectory(id), "report.json");
       await mkdir(evidenceDirectory(id), { recursive: true });
       await writeFile(reportPath, JSON.stringify(failedReport, null, 2) + "\n");
@@ -244,7 +250,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
     } else {
       await store.scan.updateMany({ where: { id, status: "RUNNING" }, data: { status: "FAILED", durationMs: Date.now() - startedAt } });
     }
-    await notifySpringScanStatus(id, "failed");
+    await notifySpringScanStatus(id, "failed", undefined, failedReportForMirror, failedPhasesForMirror);
     throw error;
   }
 }

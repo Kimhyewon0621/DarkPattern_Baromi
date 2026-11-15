@@ -1,4 +1,5 @@
 const endpoint = () => process.env.BAROMI_SPRING_API_URL?.replace(/\/$/, "");
+const pendingStatusUpdates = new Map<string, Promise<void>>();
 export const springAuthoritative = () => process.env.BAROMI_SPRING_AUTHORITATIVE === "true" && Boolean(endpoint());
 
 export async function springReadiness() {
@@ -73,25 +74,31 @@ export async function mirrorSpringScan(scan: { id: string; shopId: string; targe
 }
 
 /** Best-effort bridge during the Spring migration. The SQLite path remains authoritative until cutover. */
-export async function notifySpringScanStatus(scanId: string, status: "queued" | "running" | "partial" | "succeeded" | "failed" | "cancelled", stage?: string, reportJson?: string) {
+export async function notifySpringScanStatus(scanId: string, status: "queued" | "running" | "partial" | "succeeded" | "failed" | "cancelled", stage?: string, reportJson?: string, phaseResults?: Record<string, unknown>) {
   const base = endpoint();
   const token = process.env.BAROMI_WORKER_TOKEN;
   if (!base || !token) return;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
-  try {
-    const response = await fetch(`${base}/api/v1/scans/${encodeURIComponent(scanId)}/status`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json", "x-baromi-worker": token },
-      body: JSON.stringify({ status, stage, ...(reportJson ? { reportJson } : {}) }),
-      signal: controller.signal,
-    });
-    if (!response.ok) console.warn(`Spring scan status callback failed: ${response.status}`);
-  } catch (error) {
-    console.warn("Spring scan status callback unavailable", error instanceof Error ? error.message : error);
-  } finally {
-    clearTimeout(timeout);
-  }
+  const previous = pendingStatusUpdates.get(scanId) ?? Promise.resolve();
+  const update = previous.catch(() => undefined).then(async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), springTimeoutMs());
+    try {
+      const response = await fetch(`${base}/api/v1/scans/${encodeURIComponent(scanId)}/status`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-baromi-worker": token },
+        body: JSON.stringify({ status, stage, ...(reportJson ? { reportJson } : {}), ...(phaseResults ? { phaseResults } : {}) }),
+        signal: controller.signal,
+      });
+      if (!response.ok) console.warn(`Spring scan status callback failed: ${response.status}`);
+    } catch (error) {
+      console.warn("Spring scan status callback unavailable", error instanceof Error ? error.message : error);
+    } finally {
+      clearTimeout(timeout);
+    }
+  });
+  pendingStatusUpdates.set(scanId, update);
+  await update;
+  if (pendingStatusUpdates.get(scanId) === update) pendingStatusUpdates.delete(scanId);
 }
 
 /** Read-through access used only after Spring/PostgreSQL has passed cutover checks. */

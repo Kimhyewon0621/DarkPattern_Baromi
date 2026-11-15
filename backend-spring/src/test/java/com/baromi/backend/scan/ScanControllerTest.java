@@ -32,16 +32,29 @@ class ScanControllerTest {
     void workerCanImportAndUpdateUnknownScan() throws Exception {
         var scan = new ScanEntity("scan-1", null, "running", Instant.now());
         when(scans.findById("scan-1")).thenReturn(Optional.empty());
-        when(scans.save(any(ScanEntity.class))).thenReturn(scan);
+        when(scans.save(any(ScanEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         mvc.perform(patch("/api/v1/scans/scan-1/status")
                 .header("X-Baromi-Worker", "test-worker-token")
                 .contentType("application/json")
-                .content("{\"status\":\"running\",\"stage\":\"cart\"}"))
+                .content("{\"status\":\"running\",\"stage\":\"cart\",\"phaseResults\":{\"product\":{\"status\":\"COVERED\",\"durationMs\":1200,\"evidenceIds\":[\"ev-1\"]},\"cart\":{\"status\":\"RUNNING\",\"evidenceIds\":[]}}}"))
             .andExpect(status().isAccepted())
             .andExpect(jsonPath("$.scanId").value("scan-1"))
             .andExpect(jsonPath("$.currentStage").value("cart"))
+            .andExpect(jsonPath("$.phaseResults.product.status").value("COVERED"))
+            .andExpect(jsonPath("$.phaseResults.product.durationMs").value(1200))
+            .andExpect(jsonPath("$.phaseResults.product.evidenceIds[0]").value("ev-1"))
             .andExpect(jsonPath("$.imported").value(true));
+    }
+
+    @Test
+    void workerCannotStoreOversizedPhaseResults() throws Exception {
+        var oversized = "x".repeat(263_000);
+        mvc.perform(patch("/api/v1/scans/scan-large/status")
+                .header("X-Baromi-Worker", "test-worker-token")
+                .contentType("application/json")
+                .content("{\"status\":\"running\",\"phaseResults\":{\"site-crawl\":{\"reason\":\"" + oversized + "\"}}}"))
+            .andExpect(status().isBadRequest());
     }
 
     @Test

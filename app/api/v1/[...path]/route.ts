@@ -37,13 +37,18 @@ const normalizeScanStatus = (value: unknown) => {
 const springProgress = (scan: Record<string, unknown>, status: string) => {
   const purchasePath = scan.purchasePath === "DIRECT" ? "DIRECT" : "CART";
   const required = purchasePath === "DIRECT" ? ["product", "checkout"] : stages;
-  const current = typeof scan.currentStage === "string" ? scan.currentStage : null;
-  const reached = current ? required.indexOf(current as never) : -1;
+  const phaseResults = typeof scan.phaseResults === "object" && scan.phaseResults !== null
+    ? scan.phaseResults as Record<string, { status?: string }>
+    : {};
   const active = status === "QUEUED" || status === "RUNNING";
-  const coveredCount = active ? Math.max(0, reached + 1) : status === "COMPLETED" || status === "PARTIAL" ? required.length : 0;
   const coverage = Object.fromEntries(stages.map((stage) => [stage,
-    !required.includes(stage) ? "SKIPPED" : required.indexOf(stage) < coveredCount ? "COVERED" : active ? "PENDING" : "BLOCKED"]));
-  return { progress: required.length ? Math.round(coveredCount * 100 / required.length) : 0, coverage };
+    !required.includes(stage) ? "SKIPPED" : phaseResults[stage]?.status ?? (active ? "PENDING" : "BLOCKED")]));
+  const surfaceCoverage = Object.fromEntries(diagnosticSurfaceKinds.map((kind) => [kind,
+    phaseResults[`surface:${kind}`]?.status ?? (active ? "PENDING" : "BLOCKED")]));
+  const phaseValues = Object.values(phaseResults);
+  const terminalCount = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus ?? "")).length;
+  const progress = phaseValues.length ? Math.round(terminalCount * 100 / phaseValues.length) : 0;
+  return { progress: active ? progress : 100, coverage, surfaceCoverage, phaseResults };
 };
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
@@ -415,9 +420,13 @@ export async function GET(request: NextRequest, context: Context) {
     if (spring) {
       const normalizedStatus = normalizeScanStatus(spring.status);
       if (action === "report") {
-        return Response.json({ ...spring, status: normalizedStatus, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
+        const response = Response.json({ ...spring, status: normalizedStatus, scanId: spring.scanId ?? id, source: "SPRING_POSTGRES" }, {
           headers: { "Cache-Control": "private, no-store" },
         });
+        if (request.nextUrl.searchParams.get("download") === "1") {
+          response.headers.set("Content-Disposition", `attachment; filename="baromi-${id}.json"`);
+        }
+        return response;
       }
       const progress = springProgress(spring, String(normalizedStatus));
       return Response.json({ ...spring, status: normalizedStatus, source: "SPRING_POSTGRES", ...progress }, {

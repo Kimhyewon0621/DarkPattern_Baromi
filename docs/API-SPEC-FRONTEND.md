@@ -116,13 +116,16 @@
   "viewport": "DESKTOP|MOBILE",
   "purchasePath": "CART|DIRECT",
   "status": "QUEUED|RUNNING|COMPLETED|PARTIAL|CANCELLED|FAILED",
-  "currentStage": "product|cart|checkout|null",
+  "currentStage": "product|cart|checkout|surface:<영역>|site-crawl|null",
   "progress": 67,
+  "phaseResults": { "product": { "status": "COVERED", "startedAt": "ISO-8601", "finishedAt": "ISO-8601", "durationMs": 1200, "reason": null, "evidenceIds": ["evidence-id"] } },
   "coverage": { "product": "COVERED", "cart": "PENDING", "checkout": "PENDING" },
   "surfaceCoverage": { "SEARCH": "COVERED", "LOGIN": "DISCOVERED" },
   "summary": { "suspected": 1, "reviewNeeded": 0, "notTested": 0 }
 }
 ```
+
+`phaseResults`에는 구매 단계, 별도 탐색 영역, 전체 크롤링 단계의 실제 상태·시간·근거 ID·미완료 사유가 포함된다. 프론트는 이 값을 기준으로 실행 중과 미검사를 구분한다.
 
 프론트는 `QUEUED`/`RUNNING` 동안 1~2초 간격으로 조회하고, `COMPLETED`/`PARTIAL`/`CANCELLED`/`FAILED`에서 중지한다.
 
@@ -155,7 +158,7 @@
 }
 ```
 
-다운로드는 `GET /api/v1/scans/:scanId/report?download=1`.
+다운로드는 `GET /api/v1/scans/:scanId/report?download=1`이며 `Content-Disposition: attachment` 응답을 반환한다. SQLite·Spring/PostgreSQL 저장소에서 같은 JSON 보고서를 받는다.
 
 ### `GET /api/v1/findings/:findingId`
 
@@ -261,10 +264,10 @@ PostgreSQL 연결 확인. 정상 응답:
 헤더 `X-Baromi-Worker` 필수. 본문:
 
 ```json
-{ "status": "queued|running|partial|succeeded|failed|cancelled", "stage": "product|cart|checkout|null", "reportJson": "..." }
+{ "status": "queued|running|partial|succeeded|failed|cancelled", "stage": "product|cart|checkout|surface:AUTH|site-crawl|null", "phaseResults": { "product": { "status": "COVERED", "durationMs": 1200, "evidenceIds": ["evidence-id"] } }, "reportJson": "..." }
 ```
 
-허용되지 않는 상태 전이는 `409`다. 보고서 JSON은 최대 4MB이며 보관 기간은 서버 정책을 따른다.
+허용되지 않는 상태 전이는 `409`다. 단계 결과는 최대 256KiB이며 보고서 JSON은 최대 4MB다. 상태 조회는 저장된 `phaseResults`를 반환한다. 보관 기간은 서버 정책을 따른다.
 
 ### `POST /api/v1/scans/recover` (worker/운영 전용)
 

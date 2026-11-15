@@ -4,8 +4,17 @@
 
 ## 2026-11-15
 
+### Spring 단계 진행 결과 저장 및 보고서 다운로드 응답 통일
+
+- 변경: 워커가 구매 단계·별도 탐색·전체 크롤링의 `phaseResults`를 Spring에 저장하고 상태 조회에서 실제 저장값을 반환한다. 기존 `currentStage` 추정으로 완료되지 않은 단계를 완료 처리하던 계산을 제거했다.
+- 변경: Spring 권위 모드에서도 `GET /api/v1/scans/:scanId/report?download=1`이 첨부파일 응답 헤더를 반환한다.
+- 영향 endpoint: 내부 `PATCH /api/v1/scans/:scanId/status`, 공개 `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`.
+- 마이그레이션: Spring Flyway `V10__store_scan_phase_results.sql`; 단계 결과 256KiB 제한.
+- 프론트 영향: 진행 UI는 `phaseResults`를 사용해 실제 단계 상태·시간·사유·증거 ID를 표시한다.
+- 관련 브랜치: `backend-diagnosis-api`.
+
 - 기준 문서: [`API-SPEC-FRONTEND.md`](./API-SPEC-FRONTEND.md)
-- 백엔드 작업 기준 브랜치: `backend`
+- 백엔드 작업 기준 브랜치: `backend-diagnosis-api`
 - API 명세 기준 브랜치: `api-spec`
 - 현재 변경: 백엔드 기능 작업 브랜치와 프론트 연동 명세 브랜치를 분리
 - 영향 endpoint: 없음
