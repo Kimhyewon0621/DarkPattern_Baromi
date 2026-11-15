@@ -1297,14 +1297,17 @@ test("보고서 판정 계약은 16개 유형에 담당 8대8과 유효 상태�
   expect(values.every(({ status }) => ["SUSPECTED", "REVIEW_NEEDED", "NOT_OBSERVED", "NOT_TESTED"].includes(status))).toBe(true);
 });
 
-test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발견으로 뭉개지 않는다", () => {
+test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발견으로 뭉개지 않는다", async () => {
+  const { collectRuleReviewCandidates } = await import("../src/review-candidates");
   const observations = [
     { evidenceId: "surface:recommendation:1", kind: "RECOMMENDATION" as const, url: "https://shop.example.com/reviews", status: 200, title: "인기 상품", text: "스폰서 추천 상품 · 구매자 추천", outcome: "OBSERVED" as const },
     { evidenceId: "surface:catalog:1", kind: "CATALOG" as const, url: "https://shop.example.com/category", status: 200, title: "상품 목록", text: "품절 · 구매 불가", outcome: "OBSERVED" as const },
     { evidenceId: "surface:subscription:1", kind: "SUBSCRIPTION" as const, url: "https://shop.example.com/membership", status: 200, title: "멤버십", text: "정기 결제", outcome: "OBSERVED" as const },
     { evidenceId: "surface:cancellation:1", kind: "CANCELLATION" as const, url: "https://shop.example.com/cancel", status: 200, title: "해지", text: "해지 신청", outcome: "OBSERVED" as const },
   ];
-  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: observations });
+  // Mirror the scan pipeline: typed AI_CONTEXT candidates come from observed evidence first.
+  const reviewCandidates = collectRuleReviewCandidates({ snapshots: [], surfaces: observations, crawlPages: [] });
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [], surfaceObservations: observations, reviewCandidates });
   expect(coverage.DISGUISED_AD).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["surface:recommendation:1"] });
   expect(coverage.FALSE_RECOMMENDATION.status).toBe("REVIEW_NEEDED");
   expect(coverage.BAIT_SELLING).toMatchObject({ status: "NOT_TESTED", evidenceIds: ["surface:catalog:1"] });
