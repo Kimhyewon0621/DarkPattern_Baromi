@@ -739,3 +739,30 @@
     padding: 0;
   }
 }
+
+/* ---------- logo (brand board lockup: symbol + live wordmark) ---------- */
+.logo {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  align-self: flex-start;
+  line-height: 1;
+  text-decoration: none;
+}
+.logo img {
+  display: block;
+  max-width: none;
+  flex: none;
+}
+.logo__word {
+  color: var(--baromi-navy);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  white-space: nowrap;
+  /* optical centering: Hangul sits slightly high in its em box */
+  transform: translateY(0.04em);
+}
+a:hover .logo__word {
+  color: var(--baromi-navy);
+}
