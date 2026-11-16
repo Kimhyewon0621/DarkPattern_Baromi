@@ -18,7 +18,7 @@ export type CrawledSitePage = {
   controlsFound: string[];
   productCardsFound: string[];
   /** Direct text and accessible labels for content-bearing elements, including hidden copy. */
-  domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string }[];
+  domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; backgroundColor?: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string; region?: string; interactive?: boolean }[];
   interactives: { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string }[];
   formsFound: { method: string; action: string }[];
   elementCount: number;
@@ -27,6 +27,8 @@ export type CrawledSitePage = {
   bodyTextLength: number;
   anchorCount: number;
   interactiveCount: number;
+  /** True when the DOM inventory query returned the full interactive/control list. */
+  interactiveInventoryComplete?: boolean;
   capturedAt: string;
   durationMs?: number;
   failureReason?: string;
@@ -60,6 +62,8 @@ export type SiteCrawlResult = {
   failedUrlCount: number;
   maxDepth: number;
   durationMs: number;
+  controlProbeCount?: number;
+  controlProbeDurationMs?: number;
   /** SPA states whose normalized screen equals an already recorded state (timers, live counters). */
   duplicateStates: { url: string; statePath: string[]; duplicateOf: string }[];
   /** True when the login session did not survive a reload, so every state replays the test login first. */
@@ -117,10 +121,21 @@ export async function captureCurrentPageAsCrawlEvidence(
         const style = getComputedStyle(element);
         const rect = element.getBoundingClientRect();
         const anchor = element.closest("a[href]");
+        const control = element.closest('a[href], button, [role="button"], [role="link"]');
+        const regionNode = element.closest("header, nav, [role='navigation']");
+        let backgroundNode = element;
+        let backgroundColor = "";
+        while (backgroundNode && backgroundNode !== document.documentElement) {
+          const candidate = getComputedStyle(backgroundNode).backgroundColor;
+          if (candidate.startsWith("rgb(") || (candidate.startsWith("rgba(") && /,\\s*1(?:\\.0+)?\\)$/.test(candidate))) { backgroundColor = candidate; break; }
+          backgroundNode = backgroundNode.parentElement;
+        }
         return [{ tag: element.tagName.toLowerCase(), text: text.slice(0, 500), visible: visible(element), fontSize: style.fontSize,
-          color: style.color, opacity: style.opacity,
+          color: style.color, backgroundColor, opacity: style.opacity,
           bounds: { x: Math.round(rect.x), y: Math.round(rect.y + window.scrollY), width: Math.round(rect.width), height: Math.round(rect.height) },
-          ...(anchor ? { href: anchor.href } : {}) }];
+          ...(anchor ? { href: anchor.href } : {}),
+          ...(control ? { interactive: true } : {}),
+          ...(regionNode ? { region: regionNode.tagName.toLowerCase() + ":" + Array.from(document.querySelectorAll("header, nav, [role='navigation']")).indexOf(regionNode) } : {}) }];
       });
       const interactives = Array.from(document.body?.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex="0"]') ?? []).map(node => {
         const input = node instanceof HTMLInputElement ? node : null;
@@ -163,6 +178,7 @@ export async function captureCurrentPageAsCrawlEvidence(
     productCardsFound: [], domText, interactives, formsFound, elementCount: inventory.elementCount,
     hiddenTextElementCount: domText.filter((entry) => !entry.visible).length,
     outgoingLinks, bodyTextLength: extracted.text.length, anchorCount: extracted.anchorCount,
+    interactiveInventoryComplete: true,
     interactiveCount: extracted.interactiveCount, capturedAt: new Date().toISOString(),
   };
 }
@@ -494,6 +510,8 @@ export async function crawlShopSite(
   let stopReason: string | undefined;
   let maxDepth = 0;
   let startedVisits = 0;
+  let controlProbeCount = 0;
+  let controlProbeDurationMs = 0;
   const duplicateStates: SiteCrawlResult["duplicateStates"] = [];
   const stateSignatures = new Map<string, string>();
   // In-memory SPA sessions are lost on every page load. When a fresh page in
@@ -734,10 +752,21 @@ export async function crawlShopSite(
             const style = getComputedStyle(element);
             const rect = element.getBoundingClientRect();
             const anchor = element.closest("a[href]");
+            const control = element.closest('a[href], button, [role="button"], [role="link"]');
+            const regionNode = element.closest("header, nav, [role='navigation']");
+            let backgroundNode = element;
+            let backgroundColor = "";
+            while (backgroundNode && backgroundNode !== document.documentElement) {
+              const candidate = getComputedStyle(backgroundNode).backgroundColor;
+              if (candidate.startsWith("rgb(") || (candidate.startsWith("rgba(") && /,\\s*1(?:\\.0+)?\\)$/.test(candidate))) { backgroundColor = candidate; break; }
+              backgroundNode = backgroundNode.parentElement;
+            }
             return [{ tag: element.tagName.toLowerCase(), text: text.slice(0, 500), visible: visible(element), fontSize: style.fontSize,
-              color: style.color, opacity: style.opacity,
+              color: style.color, backgroundColor, opacity: style.opacity,
               bounds: { x: Math.round(rect.x), y: Math.round(rect.y + window.scrollY), width: Math.round(rect.width), height: Math.round(rect.height) },
-              ...(anchor ? { href: anchor.href } : {}) }];
+              ...(anchor ? { href: anchor.href } : {}),
+              ...(control ? { interactive: true } : {}),
+              ...(regionNode ? { region: regionNode.tagName.toLowerCase() + ":" + Array.from(document.querySelectorAll("header, nav, [role='navigation']")).indexOf(regionNode) } : {}) }];
           });
           const interactives = Array.from(body?.querySelectorAll('a[href], button, input, select, textarea, [role="button"], [role="link"], [role="tab"], [role="menuitem"], [onclick], [tabindex="0"], [class*="cursor-pointer"]') ?? []).map((node) => {
             const element = node;
@@ -863,7 +892,7 @@ export async function crawlShopSite(
         status, outcome: failureReason ? "FETCH_FAILED" : "OBSERVED", title: redactText(title, secrets), text,
         linksFound: links.length, controlsFound: controls, productCardsFound: productCards.map(({ title }) => title),
         domText, interactives, formsFound, elementCount, hiddenTextElementCount,
-        bodyTextLength, anchorCount, interactiveCount,
+        bodyTextLength, anchorCount, interactiveCount, interactiveInventoryComplete: true,
         outgoingLinks: links.flatMap(({ href }) => {
           const normalized = normalizeUrl(href, normalizedFinal, target.hostname);
           return normalized.url ? [normalized.url] : [];
@@ -888,8 +917,8 @@ export async function crawlShopSite(
       const productScope = item.statePath.find((state) => state.startsWith(productCardActionPrefix));
       const isProductTabState = !!productScope && item.statePath.at(-1) !== productScope;
       // Controls are independent because every candidate gets a fresh page.
-      // Probe two at a time per crawl worker to cut serial reload latency while
-      // keeping browser memory bounded.
+      // Probe two at a time per crawl worker to reduce serial reload latency
+      // while keeping browser memory bounded.
       for (let offset = 0; offset < controlCandidates.length; offset += 2) {
         await Promise.all(controlCandidates.slice(offset, offset + 2).map(async (control) => {
         const { label, index: controlIndex } = control;
@@ -921,6 +950,8 @@ export async function crawlShopSite(
         exploredControlLabels.add(exploredKey);
         let probe: Page | undefined;
         let openedPopup: Page | undefined;
+        const probeStartedAt = Date.now();
+        controlProbeCount++;
         const capturePopup = (popup: Page) => { openedPopup = popup; };
         try {
           probe = await page.context().newPage();
@@ -984,6 +1015,7 @@ export async function crawlShopSite(
         } catch {
           noteUnexplored(label, "안전한 화면 이동 여부를 확인하지 못했습니다.");
         } finally {
+          controlProbeDurationMs += Date.now() - probeStartedAt;
           probe?.off("popup", capturePopup);
           await openedPopup?.close().catch(() => undefined);
           await probe?.close().catch(() => undefined);
@@ -1022,6 +1054,7 @@ export async function crawlShopSite(
     failedUrlCount,
     maxDepth,
     durationMs: Date.now() - startedAt,
+    controlProbeCount, controlProbeDurationMs,
     duplicateStates, loginReplayed: rootStatePath.length > 0,
     ...(stopReason ? { stopReason } : {}),
   };

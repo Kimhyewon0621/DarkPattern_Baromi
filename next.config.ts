@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const config: NextConfig = {
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   serverExternalPackages: ["@prisma/adapter-better-sqlite3", "better-sqlite3"],
   async headers() {
     return [{

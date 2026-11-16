@@ -26,6 +26,11 @@ export default defineConfig({
       DATABASE_URL: process.env.DATABASE_URL,
       SCAN_RESULTS_DIR: process.env.SCAN_RESULTS_DIR,
       PLAYWRIGHT_RUN_DIRECTORY: process.env.PLAYWRIGHT_RUN_DIRECTORY,
+      NEXT_DIST_DIR: ".next-playwright",
+      // Keep browser E2E isolated from the developer's configured Supabase project.
+      // Authenticated API behavior has separate unit coverage in tests/auth.spec.ts.
+      NEXT_PUBLIC_SUPABASE_URL: "",
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: "",
     },
   },
 });

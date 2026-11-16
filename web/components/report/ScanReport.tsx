@@ -30,6 +30,7 @@ export function ScanReport({ id }: { id: string }) {
   const [report, setReport] = useState<Report>();
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [downloadPending, setDownloadPending] = useState(false);
   const backToRegistration = useBackToRegistration();
 
   const load = useCallback(async () => {
@@ -63,8 +64,27 @@ export function ScanReport({ id }: { id: string }) {
     link.href = url;
     link.download = `baromi-${id}.json`;
     link.click();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast.show("보고서 JSON을 내려받았어요");
+  }
+
+  async function downloadReport() {
+    setDownloadPending(true);
+    try {
+      const blob = await api.downloadReport(id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `baromi-${id}.json`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast.show("보고서 JSON을 내려받았어요");
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.sessionLost) { backToRegistration(); return; }
+      setError(errorMessage(cause, "보고서를 내려받지 못했어요."));
+    } finally {
+      setDownloadPending(false);
+    }
   }
 
   async function copyLink() {
@@ -88,8 +108,11 @@ export function ScanReport({ id }: { id: string }) {
       });
       router.push(`/scan/${encodeURIComponent(next.scanId)}${next.deduplicated ? "?dedup=1" : ""}`);
     } catch (cause) {
-      setError(errorMessage(cause, "재진단을 시작하지 못했어요."));
-      setPending(false);
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else {
+        setError(errorMessage(cause, "재진단을 시작하지 못했어요."));
+        setPending(false);
+      }
     }
   }
 
@@ -97,16 +120,21 @@ export function ScanReport({ id }: { id: string }) {
 
   const results = checkResults(report);
   const count = (kind: CheckResult["kind"]) => results.filter((result) => result.kind === kind).length;
-  const suspected = report.findings.filter((finding) => finding.status !== "REVIEW_NEEDED");
-  const review = report.findings.filter((finding) => finding.status === "REVIEW_NEEDED");
-  const candidates = report.reviewCandidates ?? [];
+  const suspected = results.filter((result) => result.kind === "risk").flatMap((result) => result.findings);
+  const review = results.filter((result) => result.kind === "review").flatMap((result) => result.findings);
+  const candidates = (report.reviewCandidates ?? []).filter((candidate) => candidate.ruleType
+    && report.ruleCoverage?.[candidate.ruleType]?.status === "REVIEW_NEEDED");
+  const reviewTypeCount = new Set([...review.map(({ type }) => type), ...candidates.map(({ ruleType }) => ruleType)]).size;
+  const riskWithoutFinding = results.filter((result) => result.kind === "risk" && result.findings.length === 0);
+  const reviewWithoutDetail = results.filter((result) => result.kind === "review" && result.findings.length === 0
+    && !candidates.some((candidate) => candidate.ruleType === result.type));
   const staticMode = report.executionMode !== "DYNAMIC";
   const failed = report.scanStatus === "FAILED" || report.scanStatus === "CANCELLED";
   const headline = failed
     ? "진단을 끝까지 마치지 못했어요"
     : count("risk") + count("review") === 0
       ? "검사한 범위에서 위험 신호를 관찰하지 못했어요"
-      : `위험 의심 ${count("risk")}건, 확인 필요 ${count("review")}건이 있어요`;
+      : `위험 신호 ${count("risk")}건, 검토 필요 ${count("review")}건이 있어요`;
   const linesFor = (finding: Finding) => report.priceLedger?.stages.find((stage) => stage.stage === finding.stage)?.displayedLines;
 
   return (
@@ -129,7 +157,7 @@ export function ScanReport({ id }: { id: string }) {
           <Button variant="tertiary" size="sm" onClick={() => window.print()}>인쇄</Button>
           {sample
             ? <Button variant="secondary" size="sm" icon="download" onClick={downloadSample}>JSON</Button>
-            : <ButtonLink variant="secondary" size="sm" icon="download" href={api.reportDownloadUrl(id)} download={`baromi-${id}.json`}>JSON</ButtonLink>}
+            : <Button variant="secondary" size="sm" icon="download" loading={downloadPending} loadingText="준비 중" onClick={downloadReport}>JSON</Button>}
         </div>
       </div>
 
@@ -157,7 +185,7 @@ export function ScanReport({ id }: { id: string }) {
             <div className="rpt-ribbon__text">
               <h2 className="rpt-ribbon__headline">{headline}</h2>
               <p className="muted" style={{ fontSize: 14 }}>
-                16가지 점검 항목 중 {count("clear")}개는 검사한 범위에서 관찰되지 않았고, {count("none")}개는 이유와 함께 미검사로 남았어요.
+                16가지 점검 항목 중 {count("clear")}개는 미관찰, {count("none")}개는 이유와 함께 미검사로 남았어요.
               </p>
               <div className="rpt-ribbon__stats">
                 {(["risk", "review", "clear", "none"] as const).map((kind) => (
@@ -195,25 +223,41 @@ export function ScanReport({ id }: { id: string }) {
 
           <section aria-labelledby="risk-head" className="rpt-section">
             <div className="rpt-section__head">
-              <h2 id="risk-head" className="rpt-section__title">위험 신호 상세와 권고 조치 <span className="tnum faint">{suspected.length}</span></h2>
+              <h2 id="risk-head" className="rpt-section__title">위험 신호 상세와 권고 조치 <span className="tnum faint">{suspected.length + riskWithoutFinding.length}</span></h2>
               <ResultBadge kind="risk" />
             </div>
             {suspected.length
               ? <FindingRows report={report} findings={suspected} tone="risk" linesFor={linesFor} />
-              : <p className="muted" style={{ fontSize: 14 }}>검사한 범위에서 규칙 조건을 충족한 위험 신호는 없어요.</p>}
+              : riskWithoutFinding.length === 0
+                ? <p className="muted" style={{ fontSize: 14 }}>검사한 범위에서 규칙 조건을 충족한 위험 신호는 없어요.</p>
+                : null}
+            {riskWithoutFinding.length ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {riskWithoutFinding.map((result) => (
+                  <div key={result.type} className="panel" style={{ padding: 16 }}><b>{ruleByType[result.type].name}</b><p className="muted">{result.note}</p>{result.evidenceIds.length ? <span className="mono faint">{result.evidenceIds.join(", ")}</span> : null}</div>
+                ))}
+              </div>
+            ) : null}
           </section>
 
-          {review.length || candidates.length ? (
+          {review.length || candidates.length || reviewWithoutDetail.length ? (
             <section aria-labelledby="review-head" className="rpt-section">
               <div className="rpt-section__head">
-                <h2 id="review-head" className="rpt-section__title">확인이 필요한 항목 <span className="tnum faint">{review.length + candidates.length}</span></h2>
+                <h2 id="review-head" className="rpt-section__title">검토 필요 항목 <span className="tnum faint">{reviewTypeCount}</span></h2>
                 <ResultBadge kind="review" />
               </div>
-              <p className="muted" style={{ fontSize: 14, marginTop: -8 }}>화면만으로 확정하지 않았어요. 자동 판정에 넣지 않고 운영자 검토로 넘겨요.</p>
+              <p className="muted" style={{ fontSize: 14, marginTop: -8 }}>문구나 표시 맥락의 해석이 필요한 유형이에요. 기본 사실 판정과 구분해 보고서에 근거를 남겨요.</p>
               {review.length ? <FindingRows report={report} findings={review} tone="review" linesFor={linesFor} /> : null}
+              {reviewWithoutDetail.length ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {reviewWithoutDetail.map((result) => (
+                    <div key={result.type} className="panel" style={{ padding: 16 }}><b>{ruleByType[result.type].name}</b><p className="muted">{result.note}</p>{result.evidenceIds.length ? <span className="mono faint">{result.evidenceIds.join(", ")}</span> : null}</div>
+                  ))}
+                </div>
+              ) : null}
               {candidates.length ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <h3 style={{ fontSize: 15, fontWeight: 700 }}>추가 검토 후보 <span className="tnum faint">{candidates.length}</span></h3>
+                  <h3 style={{ fontSize: 15, fontWeight: 700 }}>유형별 맥락 근거</h3>
                   <ReviewCandidates scanId={id} candidates={candidates} />
                 </div>
               ) : null}
@@ -280,7 +324,7 @@ export function ScanReport({ id }: { id: string }) {
           </div>
 
           <p className="rpt-disclaimer">
-            결과는 법률 판단이 아니라 가이드라인 기준으로 관찰한 위험 신호예요. ‘발견 안 됨’은 검사한 범위에서 신호를 보지 못했다는 뜻이며 적법함을 보증하지 않아요.
+            결과는 법률 판단이 아니라 가이드라인 기준의 위험 신호예요. ‘미관찰’은 검사한 범위에서 신호가 없었다는 뜻이며 적법함을 보증하지 않아요.
             {publicSample ? " 이 보고서는 실제 쇼핑몰이 아닌 예시 데이터로 만들었어요." : ""}
           </p>
         </article>
@@ -305,7 +349,7 @@ export function ScanReport({ id }: { id: string }) {
           <div className="rpt-box rpt-box--brand">
             <span className="rpt-chip rpt-chip--brand" style={{ alignSelf: "flex-start" }}>유료 후속 기능</span>
             <span className="rpt-box__title">AI 정밀 분석</span>
-            <p>확인 필요 후보 {candidates.length}건만 별도로 분석해요. 기존 증거와 판정은 덮어쓰지 않아요.</p>
+            <p>검토 필요 후보 {candidates.length}건만 별도로 분석해요. 기존 증거와 판정은 덮어쓰지 않아요.</p>
             <a href="#ai" className="btn btn--secondary btn--md btn--block">{report.aiReview ? "분석 상태 보기" : "자세히 보기"}</a>
           </div>
 

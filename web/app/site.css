@@ -44,6 +44,26 @@
   text-decoration: underline;
 }
 
+.account-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-controls--compact {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--ink-2);
+  font-size: 12px;
+}
+.account-controls--compact > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ---------- marketing sub-pages ---------- */
 .eyebrow {
   font-size: 13px;

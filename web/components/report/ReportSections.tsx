@@ -14,7 +14,11 @@ export function PhaseBadge({ tone, label }: { tone: PhaseTone; label: string }) 
 
 /** Purchase journey as an inline timeline (redesign "flow track"), from phaseResults. */
 export function FlowTrack({ report }: { report: Report }) {
-  const byStage = (stage: Stage) => report.findings.filter((finding) => finding.stage === stage);
+  const byStage = (stage: Stage) => report.findings.filter((finding) => {
+    if (finding.stage !== stage) return false;
+    const verdict = report.ruleCoverage?.[finding.type]?.status;
+    return verdict ? verdict === "SUSPECTED" || verdict === "REVIEW_NEEDED" : true;
+  });
   return (
     <section aria-labelledby="flow-head" className="rpt-section">
       <div className="rpt-section__head">
@@ -35,7 +39,7 @@ export function FlowTrack({ report }: { report: Report }) {
               <span className="rpt-flow__name">{stageLabels[stage]}</span>
               <span className="rpt-flow__state"><PhaseBadge tone={tone} label={phaseStatusLabels[phase.status]} />{time ? <span className="tnum faint">{formatDuration(time)}</span> : null}</span>
               <span className="rpt-flow__note">
-                {risk ? `위험 의심 ${risk}건` : review ? `확인 필요 ${review}건` : phase.reason ?? (phase.status === "COVERED" ? "신호 없음" : "")}
+                {risk ? `위험 신호 ${risk}건` : review ? `검토 필요 ${review}건` : phase.reason ?? (phase.status === "COVERED" ? "신호 없음" : "")}
               </span>
             </li>
           );

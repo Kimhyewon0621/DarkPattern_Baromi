@@ -57,14 +57,14 @@ export default function Home() {
               <div style={{ padding: "32px 40px", borderBottom: "1px solid var(--line)", display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   <span className="t-caption">linen-house.cafe24.com, 데일리 린넨 셔츠</span>
-                  <span style={{ fontSize: 28, lineHeight: 1.25, letterSpacing: "-0.02em", fontWeight: 700 }}>위험 의심 3건, 확인 필요 2건이 있어요</span>
+                  <span style={{ fontSize: 28, lineHeight: 1.25, letterSpacing: "-0.02em", fontWeight: 700 }}>위험 신호 3건, 검토 필요 2건이 있어요</span>
                 </div>
                 <ButtonLink href="/report/sample">예시 보고서 열기</ButtonLink>
               </div>
               <div className="kpi-row">
-                <div><Stat label="위험 의심" value="3" sub="규칙과 증거로 확인" kind="risk" /></div>
-                <div><Stat label="확인 필요" value="2" sub="문구 후보, 운영자 검토" kind="review" /></div>
-                <div><Stat label="발견 안 됨" value="8" sub="검사한 범위 기준" kind="clear" /></div>
+                <div><Stat label="위험 신호" value="3" sub="규칙과 증거로 확인" kind="risk" /></div>
+                <div><Stat label="검토 필요" value="2" sub="문구 후보, 운영자 검토" kind="review" /></div>
+                <div><Stat label="미관찰" value="8" sub="검사한 범위 기준" kind="clear" /></div>
                 <div><Stat label="미검사" value="3" sub="이유와 함께 표시" kind="none" /></div>
               </div>
               <div style={{ padding: "32px 40px", display: "flex", flexDirection: "column", gap: 20 }}>
@@ -145,7 +145,7 @@ export default function Home() {
               <div>
                 <span style={{ fontSize: 18, fontWeight: 700 }}>AI 정밀 분석</span>
                 <span className="faint" style={{ fontSize: 40, lineHeight: 1.1, letterSpacing: "-0.03em", fontWeight: 800 }}>[가격 미정]</span>
-                <p className="muted">기본 보고서의 확인 필요 후보만 별도로 분석하는 유료 후속 기능이에요. 기존 증거와 판정은 덮어쓰지 않아요.</p>
+                <p className="muted">기본 보고서의 검토 필요 후보만 별도로 분석하는 유료 후속 기능이에요. 기존 증거와 판정은 덮어쓰지 않아요.</p>
                 <div style={{ marginTop: "auto" }}><ButtonLink href="mailto:hello@baromi.app" variant="secondary" external>출시 소식 받기</ButtonLink></div>
               </div>
             </div>

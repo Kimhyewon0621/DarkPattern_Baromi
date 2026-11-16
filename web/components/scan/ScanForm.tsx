@@ -6,8 +6,8 @@ import { Alert } from "@/components/ui/Alert";
 import { Button } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { useToast } from "@/components/ui/Toast";
-import { api, errorMessage } from "@/lib/api";
-import { readFlag } from "@/lib/session";
+import { api, ApiError, errorMessage } from "@/lib/api";
+import { readFlag, useBackToRegistration } from "@/lib/session";
 import { surfaceKinds, type PurchasePath, type Verification, type Viewport } from "@/lib/types";
 import { surfaceLabels } from "@/lib/labels";
 import { pathLabel, viewportLabel } from "@/lib/format";
@@ -37,6 +37,7 @@ function urlProblem(value: string): string | null {
 export function ScanForm() {
   const router = useRouter();
   const toast = useToast();
+  const backToRegistration = useBackToRegistration();
   const [url, setUrl] = useState("");
   const [touched, setTouched] = useState(false);
   const [mode, setMode] = useState<Mode>("full");
@@ -84,8 +85,11 @@ export function ScanForm() {
       setVerification({ shopId: shop.shopId, ...shop.verification });
       setPending(false);
     } catch (cause) {
-      setError(errorMessage(cause, "진단을 시작하지 못했어요. 잠시 후 다시 시도해 주세요."));
-      setPending(false);
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else {
+        setError(errorMessage(cause, "진단을 시작하지 못했어요. 잠시 후 다시 시도해 주세요."));
+        setPending(false);
+      }
     }
   }
 
@@ -97,8 +101,11 @@ export function ScanForm() {
       await api.verifyShop(verification.shopId);
       await startScan(verification.shopId, "DYNAMIC");
     } catch (cause) {
-      setError(errorMessage(cause, "소유 확인에 실패했어요."));
-      setVerifying(false);
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else {
+        setError(errorMessage(cause, "소유 확인에 실패했어요."));
+        setVerifying(false);
+      }
     }
   }
 
@@ -121,7 +128,7 @@ export function ScanForm() {
     <div className="split">
       {expired ? (
         <div style={{ flexBasis: "100%" }}>
-          <Alert kind="brand" title="세션이 끝나 등록 화면으로 돌아왔어요">진단 결과는 진단을 요청한 브라우저 세션에서만 볼 수 있어요. 쇼핑몰 주소를 다시 넣어 진단을 시작해 주세요.</Alert>
+          <Alert kind="brand" title="로그인이 만료되어 등록 화면으로 돌아왔어요">다시 로그인하면 계정에 저장된 쇼핑몰과 진단 이력을 볼 수 있어요. 진단 요청이 서버에서 계속 진행 중일 수 있습니다.</Alert>
         </div>
       ) : null}
       <form className="panel panel--feature" style={{ flex: "1 1 560px", minWidth: 0 }} onSubmit={submit} noValidate>

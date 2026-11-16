@@ -26,6 +26,7 @@ export function FindingDetailView({ scanId, findingId }: { scanId: string; findi
   if (!detail) return error ? <Alert kind="error" title={error} actions={<><ButtonLink variant="secondary" size="sm" href={back}>보고서로 돌아가기</ButtonLink><ButtonLink variant="tertiary" size="sm" href="/scan/new">새 진단</ButtonLink></>} /> : <p role="status" className="muted">증거를 불러오고 있어요.</p>;
 
   const rule = ruleByType[detail.type];
+  const isReview = detail.status === "REVIEW_NEEDED";
   return (
     <>
       <PageHead
@@ -36,8 +37,8 @@ export function FindingDetailView({ scanId, findingId }: { scanId: string; findi
 
       <section className="panel panel--feature" style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <Badge kind="risk" large>위험 의심</Badge>
-          <span className="faint" style={{ fontSize: 13 }}>운영자 검토 필요</span>
+          <Badge kind={isReview ? "review" : "risk"} large>{isReview ? "검토 필요" : "위험 신호"}</Badge>
+          <span className="faint" style={{ fontSize: 13 }}>{isReview ? "맥락을 추가로 확인해야 해요" : "바로미의 판정 기준에 해당하는 신호예요"}</span>
         </div>
         <p style={{ fontSize: 17, lineHeight: 1.65, maxWidth: "40em" }}>{detail.reason}</p>
         <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 14 }}>

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { chromium } from "playwright";
 import { evidenceDirectory } from "./evidence-directory";
 import { db } from "./db";
@@ -13,7 +13,7 @@ import { scanComparisonVersion } from "./scan-comparison";
 import { decryptCredentials, type TestCredentials } from "./credential-vault";
 import { notifySpringScanStatus } from "./spring-status";
 import { classifyDynamicFailure } from "./scan-failure";
-import { closeCancelledScanPhases, initialScanPhases, parseScanPhases, updateScanPhase, type ScanPhaseId, type ScanPhaseStatus } from "./scan-phases";
+import { closeCancelledScanPhases, closeFailedScanPhases, initialScanPhases, nextPurchaseStage, parseScanPhases, updateScanPhase, type ScanPhaseId, type ScanPhaseStatus } from "./scan-phases";
 import { buildRuleCoverage } from "./rule-coverage";
 
 type ScanJobCallbacks = {
@@ -70,8 +70,12 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
       const onStage = async (snapshot: { stage: string; evidenceId?: string }) => {
         const stage = snapshot.stage as ScanPhaseId;
         const scan = await store.scan.update({ where: { id }, data: { progress: ++progress } });
-        await recordPhase(stage, "RUNNING", snapshot.evidenceId ? { evidenceIds: [...(phases[stage]?.evidenceIds ?? []), snapshot.evidenceId] } : {});
+        await recordPhase(stage, "COVERED", snapshot.evidenceId ? { evidenceIds: [...(phases[stage]?.evidenceIds ?? []), snapshot.evidenceId] } : {});
         if (scan.cancelRequested) throw new Error("진단 중단");
+        const nextStage = stage === "product" || stage === "cart" || stage === "checkout"
+          ? nextPurchaseStage(stage, requested.purchasePath === "DIRECT" ? "DIRECT" : "CART")
+          : undefined;
+        if (nextStage && phases[nextStage]?.status === "PENDING") await recordPhase(nextStage, "RUNNING");
       };
       let report;
       const scanWithBrowser = (instance: typeof browser) => target.scenario === "public"
@@ -88,6 +92,7 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
           : scanPublicShop(instance, target.url, directory, onStage, undefined, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", requested.purchasePath === "DIRECT" ? "DIRECT" : "CART")
         : scanDemo(instance, new URL(target.url).origin, target.scenario, directory, onStage, requested.viewport === "MOBILE" ? "MOBILE" : "DESKTOP", requested.purchasePath === "DIRECT" ? "DIRECT" : "CART");
       try {
+        await recordPhase("product", "RUNNING");
         let scanPromise: Promise<any> = scanWithBrowser(browser);
         const dynamicTimeoutMs = requested.executionMode === "DYNAMIC"
           ? Math.min(Math.max(Number(process.env.DYNAMIC_SCAN_TIMEOUT_MS ?? 270_000), 30_000), 270_000)
@@ -114,7 +119,9 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         const dynamicMessage = message || "동적 구매 흐름을 수집하지 못했습니다.";
         report = {
           comparisonVersion: scanComparisonVersion,
-          scanStatus: "PARTIAL" as const, executionMode: "DYNAMIC" as const,
+          // No snapshot, crawl page, or observation survived this exception,
+          // so a partial result would imply evidence that the report does not have.
+          scanStatus: "FAILED" as const, executionMode: "DYNAMIC" as const,
           authContext: "UNKNOWN" as const,
           viewport: requested.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
           purchasePath: requested.purchasePath === "DIRECT" ? "DIRECT" as const : "CART" as const,
@@ -130,15 +137,33 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
       // UI can explain where time was spent without relying on a second clock.
       report = { ...report, durationMs: Date.now() - startedAt };
       const snapshots = report.snapshots ?? [];
+      const failedBeforeEvidence = report.scanStatus === "FAILED" && snapshots.length === 0
+        && !(report.surfaceObservations ?? []).some((item: { outcome: string }) => item.outcome === "OBSERVED")
+        && !(report.siteCrawl?.pages ?? []).length;
+      let failureRecorded = false;
       for (const stage of ["product", "cart", "checkout"] as const) {
         const evidence = snapshots.filter((item: { stage: string }) => item.stage === stage);
-        if (evidence.length) await recordPhase(stage, "COVERED", { evidenceIds: evidence.map((item: { evidenceId?: string }) => item.evidenceId).filter(Boolean) as string[] });
-        else if (phases[stage]?.status !== "SKIPPED") await recordPhase(stage, report.explorationBlocker?.stage === stage ? "BLOCKED" : "NOT_FOUND", { reason: report.explorationBlocker?.stage === stage ? report.explorationBlocker.code : stage === "cart" && report.explorationBlocker?.action === "ADD_TO_CART"
-          ? `상품 화면에서 장바구니 담기 동작을 하나로 확정하지 못했습니다(${report.explorationBlocker.code}). 주문서는 바로 주문 경로로만 확인했습니다.`
-          : "검사 중 이 단계의 화면에 도달하지 못했습니다." });
+        if (evidence.length) {
+          if (phases[stage]?.status !== "COVERED") await recordPhase(stage, "COVERED", { evidenceIds: evidence.map((item: { evidenceId?: string }) => item.evidenceId).filter(Boolean) as string[] });
+        } else if (phases[stage]?.status !== "SKIPPED") {
+          if (failedBeforeEvidence) {
+            const firstFailure: boolean = !failureRecorded;
+            failureRecorded = failureRecorded || firstFailure;
+            await recordPhase(stage, firstFailure ? "FAILED" : "SKIPPED", {
+              reason: firstFailure ? report.collectionFailure ?? "진단이 증거를 수집하기 전에 실패했습니다."
+                : "앞 단계에서 진단이 실패해 이 단계는 시작하지 않았습니다.",
+            });
+          } else await recordPhase(stage, report.explorationBlocker?.stage === stage ? "BLOCKED" : "NOT_FOUND", { reason: report.explorationBlocker?.stage === stage ? report.explorationBlocker.code : stage === "cart" && report.explorationBlocker?.action === "ADD_TO_CART"
+            ? `상품 화면에서 장바구니 담기 동작을 하나로 확정하지 못했습니다(${report.explorationBlocker.code}). 주문서는 바로 주문 경로로만 확인했습니다.`
+            : "검사 중 이 단계의 화면에 도달하지 못했습니다." });
+        }
       }
       for (const surface of ["CATALOG", "AUTH", "COUPON", "RECOMMENDATION", "SUBSCRIPTION", "CANCELLATION", "POLICY"] as const) {
         if (!phases[`surface:${surface}`] || phases[`surface:${surface}`]?.status === "SKIPPED") continue;
+        if (failedBeforeEvidence) {
+          await recordPhase(`surface:${surface}`, "SKIPPED", { reason: "진단이 화면 증거를 수집하기 전에 실패해 별도 영역 탐색을 시작하지 않았습니다." });
+          continue;
+        }
         const found = (report.surfaceObservations ?? []).filter((item: { kind: string }) => item.kind === surface);
         const inspected = found.find((item: { outcome: string }) => item.outcome === "OBSERVED");
         const discovered = found.find((item: { outcome: string }) => item.outcome === "DISCOVERED");
@@ -155,20 +180,24 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
           uniqueVisitedUrlCount?: number; uniqueDiscoveredUrlCount?: number;
           failedUrlCount?: number; pendingUrls?: string[]; skippedLinks?: { reason: string }[]; durationMs?: number; stopReason?: string;
         } | undefined;
-        const complete = crawl?.complete === true;
-        const pageEvidenceIds = (crawl?.pages ?? []).map(({ evidenceId }) => evidenceId);
-        const failures = crawl?.failedUrlCount ?? 0;
-        const pending = crawl?.pendingUrls?.length ?? 0;
-        const visitedUrls = crawl?.uniqueVisitedUrlCount ?? 0;
-        const discoveredUrls = crawl?.uniqueDiscoveredUrlCount ?? 0;
-        const visitedStates = crawl?.visitedStateCount ?? crawl?.visitedUrlCount ?? 0;
-        const discoveredStates = crawl?.discoveredStateCount ?? crawl?.discoveredUrlCount ?? 0;
-        const reason = complete
-          ? `발견된 안전 경로 큐 소진 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 안전상 미방문 링크 ${crawl?.skippedLinks?.length ?? 0}개 · ${(crawl?.durationMs ?? 0)}ms`
-          : `순회 미완료 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 실패 ${failures} · 대기 ${pending} · ${crawl?.stopReason ?? "미완료 경로 존재"}`;
-        await recordPhase("site-crawl", complete ? "COVERED" : failures > 0 && (crawl?.visitedUrlCount ?? 0) === 0 ? "FAILED" : "BLOCKED", {
-          reason, evidenceIds: pageEvidenceIds,
-        });
+        if (failedBeforeEvidence) {
+          await recordPhase("site-crawl", "SKIPPED", { reason: "진단이 화면 증거를 수집하기 전에 실패해 사이트 크롤링을 시작하지 않았습니다." });
+        } else {
+          const complete = crawl?.complete === true;
+          const pageEvidenceIds = (crawl?.pages ?? []).map(({ evidenceId }) => evidenceId);
+          const failures = crawl?.failedUrlCount ?? 0;
+          const pending = crawl?.pendingUrls?.length ?? 0;
+          const visitedUrls = crawl?.uniqueVisitedUrlCount ?? 0;
+          const discoveredUrls = crawl?.uniqueDiscoveredUrlCount ?? 0;
+          const visitedStates = crawl?.visitedStateCount ?? crawl?.visitedUrlCount ?? 0;
+          const discoveredStates = crawl?.discoveredStateCount ?? crawl?.discoveredUrlCount ?? 0;
+          const reason = complete
+            ? `발견된 안전 경로 큐 소진 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 안전상 미방문 링크 ${crawl?.skippedLinks?.length ?? 0}개 · ${(crawl?.durationMs ?? 0)}ms`
+            : `순회 미완료 · 고유 URL ${visitedUrls}/${discoveredUrls} · 화면 상태 ${visitedStates}/${discoveredStates} · 실패 ${failures} · 대기 ${pending} · ${crawl?.stopReason ?? "미완료 경로 존재"}`;
+          await recordPhase("site-crawl", complete ? "COVERED" : failures > 0 && (crawl?.visitedUrlCount ?? 0) === 0 ? "FAILED" : "BLOCKED", {
+            reason, evidenceIds: pageEvidenceIds,
+          });
+        }
       }
       report = { ...report, phaseResults: phases, ruleCoverage: buildRuleCoverage(report) };
       await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
@@ -184,12 +213,14 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
         },
       });
       await store.scan.update({ where: { id }, data: { credentialCiphertext: null } });
-      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : "partial", undefined, JSON.stringify(report), phases);
+      await notifySpringScanStatus(id, report.scanStatus === "COMPLETED" ? "succeeded" : report.scanStatus === "FAILED" ? "failed" : "partial", undefined, JSON.stringify(report), phases);
       return finished.reportPath;
     } finally {
       clearTimeout(timeout);
       await proxy?.close().catch(() => {});
-      await browser.close();
+      // Cleanup after a report is already committed must not turn a successful
+      // terminal state into a second, conflicting failure notification.
+      await browser.close().catch(() => {});
       await store.scan.update({ where: { id }, data: { credentialCiphertext: null } }).catch(() => undefined);
     }
   } catch (error) {
@@ -218,24 +249,30 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
     if (existing?.status === "RUNNING") {
       const dynamic = existing.executionMode === "DYNAMIC";
       const purchasePath = existing.purchasePath === "DIRECT" ? "DIRECT" : "CART";
-      let phases = parseScanPhases(existing.phaseResultsJson, initialScanPhases(purchasePath, dynamic));
-      for (const [phaseId, phase] of Object.entries(phases) as [ScanPhaseId, NonNullable<typeof phases[ScanPhaseId]>][]) {
-        if (phase.status === "PENDING" || phase.status === "RUNNING") {
-          phases = updateScanPhase(phases, phaseId, { status: "FAILED", reason: message });
-        }
-      }
+      const phases = closeFailedScanPhases(
+        parseScanPhases(existing.phaseResultsJson, initialScanPhases(purchasePath, dynamic)),
+        message,
+      );
+      const reportPath = join(evidenceDirectory(id), "report.json");
+      const preservedReport = await readFile(reportPath, "utf8")
+        .then((contents) => JSON.parse(contents) as Record<string, any>)
+        .catch(() => null);
       const failedReportBase = {
+        ...preservedReport,
         comparisonVersion: scanComparisonVersion,
         scanStatus: "FAILED" as const,
         executionMode: existing.executionMode,
-        authContext: "UNKNOWN" as const,
-        viewport: existing.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const,
+        authContext: preservedReport?.authContext ?? "UNKNOWN" as const,
+        viewport: preservedReport?.viewport ?? (existing.viewport === "MOBILE" ? "MOBILE" as const : "DESKTOP" as const),
         purchasePath,
         scenario: existing.scenario,
         targetUrl: existing.targetUrl,
         durationMs: Date.now() - startedAt,
-        snapshots: [], interactions: [], explorationBlocker: null,
-        networkPriceEvidence: [], priceLedger: buildPriceLedger([]), findings: [],
+        snapshots: preservedReport?.snapshots ?? [], interactions: preservedReport?.interactions ?? [],
+        explorationBlocker: preservedReport?.explorationBlocker ?? null,
+        networkPriceEvidence: preservedReport?.networkPriceEvidence ?? [],
+        priceLedger: preservedReport?.priceLedger ?? buildPriceLedger([]),
+        findings: preservedReport?.findings ?? [],
         collectionFailure: message,
         collectionFailureCode: classifyDynamicFailure(message),
         phaseResults: phases,
@@ -243,7 +280,6 @@ export async function runScanJob(id: string, targetUrl: string, callbacks: ScanJ
       const failedReport = { ...failedReportBase, ruleCoverage: buildRuleCoverage(failedReportBase) };
       failedPhasesForMirror = phases;
       failedReportForMirror = JSON.stringify(failedReport);
-      const reportPath = join(evidenceDirectory(id), "report.json");
       await mkdir(evidenceDirectory(id), { recursive: true });
       await writeFile(reportPath, JSON.stringify(failedReport, null, 2) + "\n");
       await store.scan.updateMany({ where: { id, status: "RUNNING" }, data: {

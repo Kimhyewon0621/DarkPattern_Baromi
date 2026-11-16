@@ -36,6 +36,7 @@ export function ScanProgress({ id }: { id: string }) {
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [confirm, setConfirm] = useState(false);
+  const [pollAttempt, setPollAttempt] = useState(0);
   const keepButton = useRef<HTMLButtonElement>(null);
   const backToRegistration = useBackToRegistration();
   const [deduplicated, setDeduplicated] = useState(false);
@@ -44,23 +45,30 @@ export function ScanProgress({ id }: { id: string }) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
     let alive = true;
+    let consecutiveFailures = 0;
     async function refresh() {
       try {
         const next = await api.getScan(id);
         if (!alive) return;
+        consecutiveFailures = 0;
         setScan(next);
         setError("");
         if (next.status === "QUEUED" || next.status === "RUNNING") timer = setTimeout(refresh, 1500);
       } catch (cause) {
         if (!alive) return;
         if (cause instanceof ApiError && cause.sessionLost) { backToRegistration(); return; }
-        setError(errorMessage(cause, "진단 상태를 불러오지 못했어요."));
-        timer = setTimeout(refresh, 3000);
+        consecutiveFailures++;
+        const message = errorMessage(cause, "진단 상태를 불러오지 못했어요.");
+        setError(consecutiveFailures >= 5
+          ? `${message} 상태 확인을 잠시 멈췄어요. 진단은 서버에서 계속 진행 중일 수 있습니다.`
+          : message);
+        if (consecutiveFailures < 5) timer = setTimeout(refresh, 3000);
       }
     }
+    setError("");
     void refresh();
     return () => { alive = false; clearTimeout(timer); };
-  }, [id, backToRegistration]);
+  }, [id, pollAttempt, backToRegistration]);
 
   useEffect(() => { if (confirm) keepButton.current?.focus(); }, [confirm]);
 
@@ -74,7 +82,8 @@ export function ScanProgress({ id }: { id: string }) {
         ? { ...current, status: "CANCELLED", cancelRequested: false }
         : { ...current, cancelRequested: true }) : current);
     } catch (cause) {
-      setError(errorMessage(cause, "중단 요청을 보내지 못했어요."));
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else setError(errorMessage(cause, "중단 요청을 보내지 못했어요."));
     } finally {
       setPending(false);
     }
@@ -87,17 +96,23 @@ export function ScanProgress({ id }: { id: string }) {
       const next = await api.createScan({ shopId: scan.shopId, baselineScanId: undefined, profile: scan.executionMode === "DYNAMIC" ? "DYNAMIC" : "CONTEST", viewport: scan.viewport, purchasePath: scan.purchasePath });
       router.push(`/scan/${encodeURIComponent(next.scanId)}${next.deduplicated ? "?dedup=1" : ""}`);
     } catch (cause) {
-      setError(errorMessage(cause, "재진단을 시작하지 못했어요."));
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else setError(errorMessage(cause, "재진단을 시작하지 못했어요."));
       setPending(false);
     }
   }
 
   if (!scan) {
-    return error ? <Alert kind="error" title={error} /> : <p role="status" className="muted">진단 상태를 확인하고 있어요.</p>;
+    return error
+      ? <Alert kind="error" title={error} actions={<Button variant="secondary" size="sm" icon="refresh" onClick={() => setPollAttempt((attempt) => attempt + 1)}>상태 다시 확인</Button>} />
+      : <p role="status" className="muted">진단 상태를 확인하고 있어요.</p>;
   }
 
   const active = scan.status === "QUEUED" || scan.status === "RUNNING";
-  const reportReady = scan.status === "COMPLETED" || scan.status === "PARTIAL";
+  // A failed run can still have a useful report with collected evidence,
+  // phase failures, and all 16 rule-level NOT_TESTED reasons. Respect the
+  // server's report availability instead of hiding that recovery path.
+  const reportReady = scan.status === "COMPLETED" || scan.status === "PARTIAL" || (scan.status === "FAILED" && scan.hasReport === true);
   const staticMode = scan.executionMode !== "DYNAMIC";
   const stopping = scan.cancelRequested && active;
 
@@ -107,9 +122,11 @@ export function ScanProgress({ id }: { id: string }) {
     const time = phase.durationMs != null ? `, ${formatDuration(phase.durationMs)}` : "";
     return { name: stageLabels[stage], state: trackerState[phase.status], note: phaseStatusLabels[phase.status] + time };
   });
+  const crawl = phaseFor(scan, "site-crawl");
   const running = [
     ...stages.filter((stage) => phaseFor(scan, stage).status === "RUNNING").map((stage) => stageLabels[stage]),
     ...surfaceKinds.filter((kind) => phaseFor(scan, surfacePhase(kind)).status === "RUNNING").map((kind) => surfaceLabels[kind]),
+    ...(!staticMode && crawl.status === "RUNNING" ? ["쇼핑몰 전체 화면"] : []),
   ];
   const nowText = running.length
     ? `지금 확인 중: ${running.join(", ")}`
@@ -128,7 +145,7 @@ export function ScanProgress({ id }: { id: string }) {
         </>}
       />
 
-      {error ? <Alert kind="error" title={error} /> : null}
+      {error ? <Alert kind="error" title={error} actions={<Button variant="secondary" size="sm" icon="refresh" onClick={() => setPollAttempt((attempt) => attempt + 1)}>상태 다시 확인</Button>} /> : null}
       {deduplicated && active ? <Alert kind="brand" title="같은 조건의 진단이 이미 진행 중이에요">새로 시작하지 않고 진행 중인 진단을 보여드려요.</Alert> : null}
 
       {reportReady && scan.summary ? (
@@ -138,15 +155,15 @@ export function ScanProgress({ id }: { id: string }) {
             <span className="muted" style={{ fontSize: 14 }}>{scan.summary.notTested ? `미검사 ${scan.summary.notTested}개 항목은 보고서에 이유와 함께 남겼어요.` : "선택한 범위를 모두 검사했어요."}</span>
           </div>
           <div style={{ display: "flex", gap: 32 }}>
-            <Stat label="위험 의심" value={scan.summary.suspected} kind="risk" />
-            <Stat label="확인 필요" value={scan.summary.reviewNeeded} kind="review" />
+            <Stat label="위험 신호" value={scan.summary.suspected} kind="risk" />
+            <Stat label="검토 필요" value={scan.summary.reviewNeeded} kind="review" />
             <Stat label="미검사" value={scan.summary.notTested} kind="none" />
           </div>
           <ButtonLink href={`/report/${encodeURIComponent(id)}`} size="lg">진단 결과 보기</ButtonLink>
         </section>
       ) : null}
       {scan.status === "CANCELLED" ? <Alert title="진단을 중단했어요" actions={<Button variant="secondary" size="sm" onClick={retry}>같은 조건으로 재진단</Button>}>기록을 마친 단계만 남기고 나머지는 미검사로 표시했어요.</Alert> : null}
-      {scan.status === "FAILED" ? <Alert kind="error" title="진단을 마치지 못했어요" actions={<ButtonLink variant="secondary" size="sm" href={`/report/${encodeURIComponent(id)}`}>원인 보기</ButtonLink>}>결제와 주문 확정은 시도하지 않았어요. 원인은 보고서에 남겨요.</Alert> : null}
+      {scan.status === "FAILED" ? <Alert kind="error" title="진단을 마치지 못했어요" actions={scan.hasReport ? <ButtonLink variant="secondary" size="sm" href={`/report/${encodeURIComponent(id)}`}>원인과 미검사 범위 보기</ButtonLink> : undefined}>{scan.hasReport ? "결제와 주문 확정은 시도하지 않았어요. 수집된 증거와 미검사 사유를 보고서에 남겼어요." : "증거를 저장하지 못해 보고서를 만들지 못했어요. 진단 이력에서 원인을 확인한 뒤 다시 시도해 주세요."}</Alert> : null}
 
       <section aria-label="진행률" className="panel" style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: 24 }}>
         <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-end", gap: 16 }}>
@@ -158,6 +175,16 @@ export function ScanProgress({ id }: { id: string }) {
         </div>
         <div className="progress" role="progressbar" aria-label="진단 진행률" aria-valuenow={scan.progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${scan.progress}%` }} /></div>
         <Tracker steps={steps} />
+        {!staticMode ? (
+          <div className="phase-row" aria-label="쇼핑몰 전체 화면 크롤링 상태">
+            <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }}>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>쇼핑몰 전체 화면 탐색</span>
+              {crawl.reason ? <span className="faint" style={{ fontSize: 12, overflowWrap: "anywhere" }}>{crawl.reason}</span> : null}
+            </span>
+            {crawl.durationMs != null ? <span className="tnum faint" style={{ fontSize: 12 }}>{formatDuration(crawl.durationMs)}</span> : null}
+            <PhaseBadge tone={phaseTone[crawl.status]} label={phaseStatusLabels[crawl.status]} />
+          </div>
+        ) : null}
         <div aria-live="polite" style={{ display: "flex", alignItems: "center", gap: 10, paddingTop: 16, borderTop: "1px solid var(--line)", fontSize: 15 }}>
           {active ? <span className="pulse" style={{ width: 8, height: 8, borderRadius: 999, background: "var(--brand)", flex: "none" }} /> : null}
           <span>{active ? nowText : "진행이 끝났어요"}</span>
@@ -198,8 +225,8 @@ export function ScanProgress({ id }: { id: string }) {
           </ul>
           {scan.summary && active ? (
             <div style={{ display: "flex", gap: 24, paddingTop: 12, borderTop: "1px solid var(--surface-sub)" }}>
-              <Stat label="위험 의심 후보" value={scan.summary.suspected} kind="risk" />
-              <Stat label="확인 필요 후보" value={scan.summary.reviewNeeded} kind="review" />
+              <Stat label="위험 신호 후보" value={scan.summary.suspected} kind="risk" />
+              <Stat label="검토 필요 후보" value={scan.summary.reviewNeeded} kind="review" />
             </div>
           ) : null}
         </section>

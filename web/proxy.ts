@@ -1,0 +1,37 @@
+import { createServerClient } from "@supabase/ssr";
+import { NextResponse, type NextRequest } from "next/server";
+
+const protectedPath = (pathname: string) =>
+  pathname === "/shops" || pathname === "/scan/new" ||
+  /^\/(?:scan|shop)\/[^/]+/.test(pathname) ||
+  (/^\/report\/[^/]+/.test(pathname) && !/^\/report\/sample(?:-|\/|$)/.test(pathname));
+
+export async function proxy(request: NextRequest) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !key || !protectedPath(request.nextUrl.pathname)) return NextResponse.next({ request });
+
+  let response = NextResponse.next({ request });
+  const supabase = createServerClient(url, key, {
+    cookies: {
+      getAll: () => request.cookies.getAll(),
+      setAll: (cookiesToSet) => {
+        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+        response = NextResponse.next({ request });
+        cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options));
+      },
+    },
+  });
+
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims?.sub) {
+    const login = new URL("/login", request.url);
+    login.searchParams.set("next", request.nextUrl.pathname + request.nextUrl.search);
+    return NextResponse.redirect(login);
+  }
+  return response;
+}
+
+export const config = {
+  matcher: ["/shops", "/scan/new", "/scan/:path*", "/shop/:path*", "/report/:path*"],
+};

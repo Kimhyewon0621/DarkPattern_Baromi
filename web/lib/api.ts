@@ -3,12 +3,13 @@ import type {
   ScanProfile, ScanState, Shop, ShopListResponse, Stage, VerifyResponse, Viewport,
 } from "./types";
 import { normalizeReport, normalizeScan, normalizeStatus } from "./normalize";
+import { supabaseBrowser } from "./supabase/client";
 import * as demo from "./demo";
 
 /**
  * Client for the Baromi public API v1 (same-origin `/api/v1`).
- * The session lives in the server's HttpOnly `darkpattern-session` cookie; this code never reads it.
- * Only the public endpoints from spec section 9 are used here.
+ * Supabase Auth owns the user session; the current access token is attached to
+ * every protected API request. The browser never reads the server's legacy owner cookie.
  */
 export const isDemo = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
@@ -44,9 +45,15 @@ export function errorMessage(cause: unknown, otherwise: string): string {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
+    const headers = new Headers(init?.headers);
+    if (init?.body) headers.set("Content-Type", "application/json");
+    if (!isDemo && typeof window !== "undefined") {
+      const { data } = await supabaseBrowser().auth.getSession();
+      if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
+    }
     response = await fetch("/api/v1/" + path, {
       ...init,
-      headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+      headers,
       cache: "no-store",
       credentials: "same-origin",
     });
@@ -56,6 +63,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(body.error ?? fallback[response.status] ?? "요청을 처리하지 못했어요.", response.status);
   return body as T;
+}
+
+async function requestDownload(path: string): Promise<Blob> {
+  let response: Response;
+  try {
+    const headers = new Headers();
+    if (!isDemo && typeof window !== "undefined") {
+      const { data } = await supabaseBrowser().auth.getSession();
+      if (data.session?.access_token) headers.set("Authorization", `Bearer ${data.session.access_token}`);
+    }
+    response = await fetch(`/api/v1/${path}`, {
+      headers,
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError("서버에 연결하지 못했어요. 네트워크를 확인해 주세요.", 0);
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new ApiError(body.error ?? fallback[response.status] ?? "파일을 내려받지 못했어요.", response.status);
+  }
+  return response.blob();
 }
 
 const post = <T>(path: string, body: object) => request<T>(path, { method: "POST", body: JSON.stringify(body) });
@@ -118,6 +148,6 @@ export const api = {
   saveLabels: (scanId: string, labels: { candidateId: string; label: OperatorLabel }[]) =>
     usesSample(scanId) ? demo.ok() : post<unknown>(`scans/${seg(scanId)}/ai-review-labels`, { labels }),
 
-  reportDownloadUrl: (scanId: string) => `/api/v1/scans/${seg(scanId)}/report?download=1`,
+  downloadReport: (scanId: string) => requestDownload(`scans/${seg(scanId)}/report?download=1`),
   evidenceUrl: (scanId: string, stage: Stage) => `/api/v1/evidences/${seg(scanId)}-${stage}`,
 };

@@ -12,8 +12,12 @@ export type FirstPriceExposure = {
   text: string;
   amounts: number[];
   feeMentions: { key: string; won: number }[];
-  screenshot: string;
+  screenshot?: string;
   capturedAt: string;
+  productIdentity?: string;
+  listingStatePath?: string[];
+  productStatePath?: string[];
+  sourceEvidenceIds?: string[];
 };
 
 export function buildPriceLedger(

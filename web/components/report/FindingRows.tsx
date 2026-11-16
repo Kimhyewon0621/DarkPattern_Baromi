@@ -18,7 +18,7 @@ export function FindingRows({ report, findings, tone, linesFor }: {
           <li key={finding.id} className="rpt-finding">
             <div className="rpt-finding__text">
               <span className="rpt-finding__tag">
-                {tone === "risk" ? "위험 의심" : "확인 필요"} #{index + 1} · {stageLabels[finding.stage]}{tag ? ` · 지난 진단 대비 ${tag}` : ""}
+                {tone === "risk" ? "위험 신호" : "검토 필요"} #{index + 1} · {stageLabels[finding.stage]}{tag ? ` · 지난 진단 대비 ${tag}` : ""}
               </span>
               <h3 className="rpt-finding__title">{rule.name}</h3>
               <p className="rpt-finding__body">{finding.reason}</p>

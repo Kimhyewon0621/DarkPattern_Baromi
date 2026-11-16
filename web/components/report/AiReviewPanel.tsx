@@ -38,12 +38,12 @@ export function AiReviewPanel({ report, candidates, onRequested }: { report: Rep
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: "46em" }}>
           <h2 id="ai-head" style={{ fontSize: 20, fontWeight: 700 }}>AI 정밀 분석</h2>
-          <p className="muted" style={{ fontSize: 14 }}>이 보고서는 AI 없이 먼저 완성됐어요. 확인 필요 후보만 별도로 보내는 유료 후속 기능이고, 기존 증거와 규칙 판정을 덮어쓰지 않아요.</p>
+          <p className="muted" style={{ fontSize: 14 }}>이 보고서는 AI 없이 먼저 완성됐어요. 검토 필요 후보만 별도로 보내는 유료 후속 기능이고, 기존 증거와 규칙 판정을 덮어쓰지 않아요.</p>
         </div>
         {!review && candidates.length && report.aiEligible ? <Button variant="secondary" onClick={request} loading={pending} loadingText="요청 중">AI 정밀 분석 요청</Button> : null}
       </div>
 
-      {!candidates.length ? <p className="faint" style={{ fontSize: 14 }}>이 보고서에는 AI로 넘길 확인 필요 후보가 없어요.</p> : null}
+      {!candidates.length ? <p className="faint" style={{ fontSize: 14 }}>이 보고서에는 AI로 넘길 검토 필요 후보가 없어요.</p> : null}
       {candidates.length && !report.aiEligible && !review ? (
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 8, background: "var(--canvas)", fontSize: 14 }}>
           <Icon name="lock" color="var(--ink-2)" />무료 진단은 기본 엔진 결과만 제공해요. 유료 권한이 확인되면 이 보고서에서 요청할 수 있어요.

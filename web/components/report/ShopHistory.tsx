@@ -66,7 +66,8 @@ export function ShopHistory({ shopId }: { shopId: string }) {
       toast.show("진단과 증거를 삭제했어요");
       setRemoveScan(null);
     } catch (cause) {
-      setDialogError(cause instanceof ApiError && cause.status === 409 ? "진행 중인 진단은 삭제할 수 없어요. 끝난 뒤 다시 시도해 주세요." : errorMessage(cause, "진단을 삭제하지 못했어요."));
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else setDialogError(cause instanceof ApiError && cause.status === 409 ? "진행 중인 진단은 삭제할 수 없어요. 끝난 뒤 다시 시도해 주세요." : errorMessage(cause, "진단을 삭제하지 못했어요."));
     } finally {
       setBusy(false);
     }
@@ -79,7 +80,8 @@ export function ShopHistory({ shopId }: { shopId: string }) {
       await api.deleteShop(shopId);
       router.replace("/shops");
     } catch (cause) {
-      setDialogError(cause instanceof ApiError && cause.status === 409 ? "진행 중인 진단이 있어 삭제할 수 없어요. 끝나거나 중단한 뒤 다시 시도해 주세요." : errorMessage(cause, "쇼핑몰을 삭제하지 못했어요."));
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else setDialogError(cause instanceof ApiError && cause.status === 409 ? "진행 중인 진단이 있어 삭제할 수 없어요. 끝나거나 중단한 뒤 다시 시도해 주세요." : errorMessage(cause, "쇼핑몰을 삭제하지 못했어요."));
       setBusy(false);
     }
   }
@@ -142,7 +144,7 @@ export function ShopHistory({ shopId }: { shopId: string }) {
               <label htmlFor="history-sort" className="sr-only">정렬</label>
               <select id="history-sort" className="input" style={{ width: 172 }} value={sort} onChange={(event) => setSort(event.target.value as "new" | "risk")}>
                 <option value="new">최신순</option>
-                <option value="risk">위험 의심 많은 순</option>
+                <option value="risk">위험 신호 많은 순</option>
               </select>
               <Icon name="down" color="var(--ink-2)" />
             </span>

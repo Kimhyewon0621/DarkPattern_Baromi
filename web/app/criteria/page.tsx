@@ -14,7 +14,7 @@ const detail: Record<FindingType, { evidence: string; limit: string }> = {
   HIDDEN_INFO: { evidence: "가격·조건·추가 비용의 표시 위치와 누락 신호", limit: "색 대비, 접힘, 정책 문서 전체와의 비교는 아직 하지 않아요." },
   FALSE_DISCOUNT: { evidence: "할인 기준 가격·기간·조건을 확인할 자료", limit: "과거 가격 이력이 없어 할인의 진위를 자동으로 확정하지 않아요." },
   DISGUISED_AD: { evidence: "광고·협찬 표기와 추천·콘텐츠 요소의 관계", limit: "광고주 관계나 표시 가독성은 확인하지 않아요." },
-  CONFIRM_SHAMING: { evidence: "같은 결정의 수락·거부 문구 쌍과 압박 표현", limit: "단어 맥락을 잘못 읽을 수 있어 대부분 확인 필요로 둬요." },
+  CONFIRM_SHAMING: { evidence: "같은 결정의 수락·거부 문구 쌍과 압박 표현", limit: "단어 맥락을 잘못 읽을 수 있어 대부분 검토 필요로 둬요." },
   FORCED_ACTION: { evidence: "구매와 무관한 가입·권한 허용 요구와 막힌 위치", limit: "비회원 대안이 있는지 끝까지 확인하지 못할 수 있어요." },
   HIDDEN_SUBSCRIPTION: { evidence: "구독 주기, 체험 종료 후 결제, 기본 선택, 해지 정보", limit: "실제 반복 결제 예약 조건은 검증하지 않아요." },
   SNEAKY_CART_ADD: { evidence: "담기 요청 한 번 뒤 장바구니 품목·수량 변화", limit: "수량을 정확히 읽지 못하거나 장바구니가 비어 있지 않으면 미검사로 둬요." },

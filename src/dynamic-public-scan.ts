@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { Browser } from "playwright";
 import { buildPriceLedger, type FirstPriceExposure } from "./price-ledger";
 import { isProductPage } from "./public-scan";
-import { explorePurchaseJourney, waitForDomQuiet, type JourneyBlocker, type SurfaceObservation } from "./purchase-journey";
+import { explorePurchaseJourney, inspectInitialCart, waitForDomQuiet, type JourneyBlocker, type SurfaceObservation } from "./purchase-journey";
 import { observePaidOptionChanges } from "./journey-evidence";
 import { capture } from "./scan";
 import { scanComparisonVersion } from "./scan-comparison";
@@ -11,7 +11,7 @@ import { detect, type InteractionEvidence, type Snapshot } from "./rules";
 import { detectForcedAction } from "./detectors/interaction-patterns";
 import { detectInitialConsentPreselection } from "./detectors/preselection";
 import { feeMentionsFromText } from "./price-text";
-import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectRuleReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
+import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectRuleReviewCandidates, collectSurfaceReviewCandidates, limitReviewCandidates } from "./review-candidates";
 import { classifyReviewCandidates } from "./review-classifier";
 import { structuredProductLinks } from "./structured-product-links";
 import type { TestCredentials } from "./credential-vault";
@@ -19,6 +19,7 @@ import { clickAndWaitForChange, openLoginForm, submitLoginForm } from "./test-lo
 import { classifyDynamicFailure } from "./scan-failure";
 import { summarizeAiUsage } from "./ai-cost";
 import { buildRuleCoverage } from "./rule-coverage";
+import { firstPriceExposureFromCrawl } from "./crawl-price-exposure";
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "./diagnostic-surfaces";
 import type { ScanPhaseStatus } from "./scan-phases";
 import { captureCurrentPageAsCrawlEvidence, crawlShopSite, type CrawledSitePage, type SiteCrawlProgress, type SiteCrawlResult } from "./site-crawler";
@@ -170,6 +171,10 @@ export async function scanDynamicPublicShop(
       });
     }
 
+    // Read the cart before any diagnostic add action. A visible zero badge or
+    // explicit empty-cart message is evidence; the absence of a badge is not.
+    const cartBaseline = purchasePath === "CART" ? await inspectInitialCart(page) : { verifiedEmpty: false };
+
     let firstPriceExposure: FirstPriceExposure | undefined;
     if (!await isProductPage(page, page.url())) {
       const listingUrl = page.url();
@@ -320,6 +325,12 @@ export async function scanDynamicPublicShop(
     await mkdir(directory, { recursive: true });
     const snapshots: Snapshot[] = [];
     const interactions: InteractionEvidence[] = [];
+    if (purchasePath === "CART") interactions.push({
+      id: "cart:baseline", stage: "product", kind: "INITIAL_STATE", capturedAt: new Date().toISOString(),
+      controlLabel: cartBaseline.verifiedEmpty ? "담기 전 장바구니: 비어 있음 (0개)"
+        : cartBaseline.count === undefined ? "담기 전 장바구니 상태를 확인하지 못함" : `담기 전 장바구니: ${cartBaseline.count}개`,
+      outcome: cartBaseline.count !== undefined || cartBaseline.verifiedEmpty ? "OBSERVED" : "NOT_APPLICABLE",
+    });
     const journeyTimeoutMs = Math.min(Math.max(Number(process.env.DYNAMIC_JOURNEY_TIMEOUT_MS ?? 60_000), 20_000), 120_000);
     let journeyFailure: string | null = null;
     let journeyTimer: ReturnType<typeof setTimeout> | undefined;
@@ -330,6 +341,20 @@ export async function scanDynamicPublicShop(
       const activeSurface = page.locator('[role="dialog"]:visible, [aria-modal="true"]:visible, div.fixed.inset-0:visible').last();
       const root = await activeSurface.count() ? activeSurface : page.locator("body");
       const snapshot = await capture(page, stage, directory, root, page.url(), true);
+      if (stage === "cart") {
+        const productSnapshot = snapshots.find((item) => item.stage === "product");
+        snapshot.cartCountBeforeAdd = cartBaseline.count ?? productSnapshot?.cartItemCount;
+        snapshot.cartBaselineVerified = cartBaseline.verifiedEmpty || productSnapshot?.cartItemCount !== undefined;
+        snapshot.requestedQuantity = productSnapshot?.requestedQuantity;
+        snapshot.requestedProductIdentity = productSnapshot?.productIdentity;
+        snapshot.cartContentsVerified = snapshot.cartBaselineVerified === true && snapshot.cartCountBeforeAdd === 0
+          && snapshot.cartLinesComplete === true
+          && snapshot.cartLineIdentities?.length === 1
+          && productSnapshot?.productIdentity !== undefined
+          && snapshot.cartLineIdentities[0] === productSnapshot.productIdentity
+          && snapshot.cartItemCount === snapshot.requestedQuantity
+          && snapshot.requestedQuantity !== undefined;
+      }
       snapshots.push(snapshot);
       // The checked state at every stage is preserved by capture() before any
       // reversible probing below changes it.
@@ -348,6 +373,9 @@ export async function scanDynamicPublicShop(
       new Promise<never>((_, reject) => { journeyTimer = setTimeout(() => reject(new Error(`동적 구매 흐름 시간 초과(${journeyTimeoutMs}ms)`)), journeyTimeoutMs); }),
     ]).catch((error: unknown) => {
       journeyFailure = error instanceof Error ? error.message : "동적 구매 흐름이 제한 시간 안에 끝나지 않았습니다.";
+      // Promise.race does not cancel the losing journey. Close its page before
+      // proceeding so it cannot race the crawler against the same page.
+      void page.close().catch(() => undefined);
       return { observations: [], network: [], surfaceDestinations: [], surfaceObservations: [], reached: "product" as const, blocker: { stage: "product" as const, code: "ACTION_FAILED" as const, action: purchasePath === "DIRECT" ? "DIRECT_BUY" as const : "ADD_TO_CART" as const, candidateCount: 0 } };
     });
     if (journeyTimer) clearTimeout(journeyTimer);
@@ -356,12 +384,19 @@ export async function scanDynamicPublicShop(
     // client-rendered product/category/surface routes. Crawling before this
     // point only sees the framework shell on some SPA storefronts.
     const initialCrawlUrls = new Set([target.href, ...journey.surfaceDestinations.map(({ href }) => href)]);
-    await onCrawlProgress?.({
-      visited: 0, discovered: initialCrawlUrls.size, pending: initialCrawlUrls.size, currentUrl: target.href,
-      uniqueVisitedUrls: 0, uniqueDiscoveredUrls: initialCrawlUrls.size,
-    });
     let siteCrawl: SiteCrawlResult;
-    try {
+    if (journeyFailure) {
+      siteCrawl = {
+        complete: false, pages: [], skippedLinks: [], unexploredControls: [], nonNavigatingControls: [], skippedControls: [], pendingUrls: [...initialCrawlUrls],
+        discoveredUrlCount: initialCrawlUrls.size, visitedUrlCount: 0, discoveredStateCount: initialCrawlUrls.size, visitedStateCount: 0,
+        uniqueDiscoveredUrlCount: initialCrawlUrls.size, uniqueVisitedUrlCount: 0, productCardCount: 0, failedUrlCount: 0, maxDepth: 0,
+        durationMs: 0, duplicateStates: [], loginReplayed: false, stopReason: "구매 흐름 시간 초과로 페이지를 정리해 크롤링을 시작하지 않았습니다.",
+      };
+    } else try {
+      await onCrawlProgress?.({
+        visited: 0, discovered: initialCrawlUrls.size, pending: initialCrawlUrls.size, currentUrl: target.href,
+        uniqueVisitedUrls: 0, uniqueDiscoveredUrls: initialCrawlUrls.size,
+      });
       siteCrawl = await crawlShopSite(page, target.href, credentials, onCrawlProgress, {
         seedUrls: journey.surfaceDestinations.map(({ href }) => href),
       });
@@ -386,6 +421,17 @@ export async function scanDynamicPublicShop(
         uniqueDiscoveredUrlCount: siteCrawl.uniqueDiscoveredUrlCount + (alreadyVisitedUrl ? 0 : 1),
         uniqueVisitedUrlCount: siteCrawl.uniqueVisitedUrlCount + (alreadyVisitedUrl ? 0 : 1),
       };
+    }
+    const crawledPriceExposure = firstPriceExposureFromCrawl(
+      siteCrawl.pages,
+      snapshots.find((snapshot) => snapshot.stage === "product"),
+    );
+    // A crawl-linked listing/detail pair carries stronger identity and SPA
+    // state provenance than the earlier URL-only observation. Prefer it when
+    // both observations refer to the selected product route.
+    if (crawledPriceExposure && (!firstPriceExposure?.productIdentity ||
+        firstPriceExposure.productIdentity === crawledPriceExposure.productIdentity)) {
+      firstPriceExposure = crawledPriceExposure;
     }
     const surfaceFromCrawl = siteCrawl.pages.flatMap((item) => {
       const routeAndText = `${item.url} ${item.title} ${item.text}`;
@@ -430,11 +476,15 @@ export async function scanDynamicPublicShop(
     }
     // Put typed rule questions first: AI payloads are bounded, so generic
     // screen notes must not crowd out the eight contextual rule candidates.
-    const reviewCandidates = [...collectRuleReviewCandidates({ snapshots, surfaces: surfaceObservations, crawlPages: siteCrawl.pages, interactions }), ...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)].slice(0, 40);
-    const findings = [...detect(snapshots, firstPriceExposure?.feeMentions, interactions, firstPriceExposure),
-      ...detectInitialConsentPreselection(siteCrawl.pages), ...detectForcedAction(journey.blocker ?? null, snapshots)];
+    const reviewCandidates = limitReviewCandidates([
+      ...collectRuleReviewCandidates({ snapshots, surfaces: surfaceObservations, crawlPages: siteCrawl.pages, interactions }),
+      ...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations),
+      ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null),
+    ]);
     const authContext = authenticatedWithTestAccount ? "TEST_ACCOUNT" as const : "ANONYMOUS" as const;
-    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, siteCrawlPages: siteCrawl.pages, reviewCandidates, authContext, firstPriceExposure });
+    const findings = [...detect(snapshots, firstPriceExposure?.feeMentions, interactions, firstPriceExposure),
+      ...detectInitialConsentPreselection(siteCrawl.pages), ...detectForcedAction(journey.blocker ?? null, snapshots, authContext)];
+    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, siteCrawl: { pages: siteCrawl.pages, complete: siteCrawl.complete }, reviewCandidates, authContext, firstPriceExposure });
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: dynamicScanStatus(journey.reached, journey.blocker ?? null, siteCrawl.complete),
@@ -457,8 +507,8 @@ export async function scanDynamicPublicShop(
       },
       networkPriceEvidence: journey.network,
       priceLedger: buildPriceLedger(snapshots, journey.network, firstPriceExposure),
-      reviewCandidates,
-      reviewClassifications: classifyReviewCandidates(reviewCandidates),
+      reviewCandidates: reviewCandidates.filter(({ findingStatus }) => !findingStatus),
+      reviewClassifications: classifyReviewCandidates(reviewCandidates.filter(({ findingStatus }) => !findingStatus)),
       aiUsage: summarizeAiUsage([]),
       findings, ruleCoverage, collectionFailure: journeyFailure, collectionFailureCode: journeyFailure ? classifyDynamicFailure(journeyFailure) : null,
     };

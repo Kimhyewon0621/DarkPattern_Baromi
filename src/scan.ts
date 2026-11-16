@@ -16,9 +16,15 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
     'input:is([type="checkbox"], [type="radio"])',
     'select',
     '[role="switch"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
   ].join(", ");
   const optionControls = await main.locator(optionSelector).evaluateAll((nodes) =>
-    nodes.filter((node) => node.checkVisibility({ opacityProperty: true, visibilityProperty: true })).flatMap((node) => {
+    nodes.filter((node) => node.checkVisibility({ opacityProperty: true, visibilityProperty: true })).flatMap<{
+      label: string; amount?: string; selected: boolean; kind: "CHECKBOX" | "RADIO" | "SELECT" | "SWITCH";
+      bounds: { x: number; y: number; width: number; height: number };
+      location: { frame: string; visible: boolean; source: "dom" };
+    }>((node) => {
       const control = node as HTMLElement;
       const { x, y, width, height } = control.getBoundingClientRect();
       const bounds = { x: x + window.scrollX, y: y + window.scrollY, width, height };
@@ -26,18 +32,24 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
         return Array.from(control.options)
           .filter((option) => option.selected || option.dataset.optionWon !== undefined)
           .map((option) => ({
-            label: option.label.trim(), amount: option.dataset.optionWon, selected: option.selected, bounds,
+            label: option.label.trim(), amount: option.dataset.optionWon, selected: option.selected, kind: "SELECT" as const, bounds,
             location: { frame: "main", visible: true, source: "dom" as const },
           }));
       }
       const native = control instanceof HTMLInputElement;
+      const labelledBy = (control.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)
+        .map((id) => document.getElementById(id)?.innerText.trim() ?? "").filter(Boolean).join(" ");
+      const nativeLabel = native ? Array.from(control.labels ?? [], (item) => item.innerText.trim()).join(" ") : "";
       const label = native
-        ? Array.from(control.labels ?? [], (item) => item.innerText.trim()).join(" ")
-        : control.getAttribute("aria-label") ?? control.innerText.trim();
+        ? nativeLabel || control.getAttribute("aria-label") || ""
+        : control.getAttribute("aria-label") || labelledBy || control.closest("label")?.innerText.trim() || control.innerText.trim();
       return [{
         label,
         amount: control.dataset.optionWon,
         selected: native ? control.checked : control.getAttribute("aria-checked") === "true",
+        kind: native ? control.type.toUpperCase() as "CHECKBOX" | "RADIO"
+          : control.getAttribute("role")?.toUpperCase() === "CHECKBOX" ? "CHECKBOX"
+            : control.getAttribute("role")?.toUpperCase() === "RADIO" ? "RADIO" : "SWITCH" as const,
         location: { frame: "main", visible: true, source: "dom" as const },
         bounds,
       }];
@@ -48,6 +60,10 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
     const won = amount === undefined ? paidOptionFromText(control.label) : Number(amount);
     return won === null || !Number.isFinite(won) ? [] : [{ ...control, won }];
   });
+  const choiceControls = optionControls.map(({ label, amount, selected, kind }) => ({
+    label: label.replace(/\s+/g, " ").trim(), selected, kind,
+    ...(amount === undefined ? {} : { amount: Number(amount) }),
+  }));
   const structuredFees = await main.locator("[data-fee-id]").evaluateAll((nodes) =>
     nodes.filter((node) => node.checkVisibility({ opacityProperty: true, visibilityProperty: true })).map((node) => {
       const row = node as HTMLElement;
@@ -89,17 +105,159 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
   // structured fields and the price ledger.
   const bodyText = await main.innerText().catch(() => "");
   const textLines = bodyText.split(/\n+/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 300);
-  const cartCountMatch = stage === "cart" ? bodyText.match(/(?:장바구니|카트|cart|bag|basket)\s*[(:：]?\s*(\d+)\s*(?:개|items?)?\s*\)?/i) : null;
+  const cartCountMatch = bodyText.match(/(?:장바구니|카트|cart|bag|basket)\s*[(:：]?\s*(\d+)\s*(?:개|items?)?\s*\)?/i);
   const cartItemCount = cartCountMatch ? Number(cartCountMatch[1]) : undefined;
+  const requestedQuantity = stage === "product" ? await main.evaluate((root) => {
+    const values = [...root.querySelectorAll('input[type="number"], input[role="spinbutton"], [role="spinbutton"]')]
+      .filter((node) => (node as HTMLElement).checkVisibility()).map((node) => {
+      const control = node as HTMLInputElement;
+      const raw = control.value || control.getAttribute("aria-valuenow") || "";
+      const value = Number(raw);
+      return Number.isInteger(value) && value > 0 ? value : null;
+    }).filter((value): value is number => value !== null);
+    if (values.length === 1) return values[0];
+    const buttons = [...root.querySelectorAll("button")].filter((node) => {
+      const button = node as HTMLButtonElement;
+      return button.checkVisibility() && /^(?:\+|−|-)$/u.test(button.innerText.trim());
+    });
+    for (const decrement of buttons.filter((button) => /^(?:−|-)$/u.test(button.innerText.trim()))) {
+      const group = decrement.parentElement;
+      if (!group || !buttons.some((button) => /^(?:\+)$/u.test(button.innerText.trim()) && button.parentElement === group)) continue;
+      const numbers = [...group.querySelectorAll("span, output, [aria-live]")]
+        .filter((node) => node.checkVisibility()).map((node) => node.textContent?.trim() ?? "")
+        .filter((value) => /^\d+$/.test(value)).map(Number).filter((value) => Number.isInteger(value) && value > 0);
+      if (numbers.length === 1) return numbers[0];
+    }
+    return undefined;
+  },) : undefined;
+  const productIdentity = stage === "product" ? await main.evaluate((root, sourceUrl) => {
+    const ids = [...root.querySelectorAll("[data-product-id], [data-sku], [itemprop='sku']")]
+      .map((node) => node.getAttribute("data-product-id") ?? node.getAttribute("data-sku") ?? node.getAttribute("content") ?? node.textContent ?? "")
+      .map((value) => value.replace(/\s+/g, " ").trim()).filter(Boolean);
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 1) return `item:${uniqueIds[0]}`;
+    const route = new URL(sourceUrl);
+    const canonical = document.querySelector<HTMLLinkElement>('link[rel="canonical"]')?.href;
+    if (canonical) {
+      const canonicalUrl = new URL(canonical, route);
+      if (canonicalUrl.origin === route.origin && canonicalUrl.pathname !== "/") return `url:${canonicalUrl.pathname.replace(/\/$/, "")}`;
+    }
+    const names = [...root.querySelectorAll("[itemprop='name'], [data-product-name], h1, h2, h3, h4, [role='heading']")]
+      .filter((element) => {
+        const style = getComputedStyle(element);
+        return (element as HTMLElement).checkVisibility() && style.visibility !== "hidden" && style.display !== "none";
+      }).map((node) => (node.getAttribute("content") ?? node.getAttribute("data-product-name") ?? node.textContent ?? "").replace(/\s+/g, " ").trim())
+      .filter((name) => name.length >= 2 && name.length <= 180 && !/^(?:상품\s*상세|product\s*details?)$/i.test(name));
+    const uniqueNames = [...new Set(names.map((value) => value.normalize("NFKC").toLocaleLowerCase()
+      .replace(/[\p{P}\p{S}\s]+/gu, " ").trim().slice(0, 180)).filter(Boolean))];
+    if (uniqueNames.length === 1) return `name:${uniqueNames[0]}`;
+    return `url:${route.pathname.replace(/\/$/, "") || "/"}`;
+  }, url) : undefined;
+  const cartLines = stage === "cart" ? await main.evaluate((root) => {
+    const selectors = "[data-cart-item], [data-product-id], [data-sku], [data-testid*='cart-item' i], [data-testid*='cart-product' i], [role='row'], tr, [class*='cart-item' i], [class*='cart-row' i], [class*='line-item' i], [class*='product-item' i]";
+    const panelTitles = [...root.querySelectorAll("*")].filter((node) => {
+      if (!(node as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }) || node.children.length || node.textContent!.trim().length > 80) return false;
+      return /(?:장바구니|쇼핑백|카트|cart|basket|shopping\s*bag)/i.test(node.textContent ?? "");
+    });
+    let cartPanel: Element | null = null;
+    for (const title of panelTitles) {
+      for (let ancestor = title.parentElement; ancestor && root.contains(ancestor); ancestor = ancestor.parentElement) {
+        const text = ancestor.innerText ?? "";
+        const hasPrice = /(?:[₩$£€]\s*\d[\d,.]*|\d[\d,.]*\s*원)/.test(text);
+        const controls = [...ancestor.querySelectorAll("input, select, button, [role='spinbutton']")]
+          .filter((node) => (node as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+        const hasQuantity = controls.some((node) => node.matches('input[type="number"], input[role="spinbutton"], select, [role="spinbutton"]')
+          || /(?:수량|quantity|increase|decrease)/i.test(`${node.getAttribute("aria-label") ?? ""} ${node.getAttribute("title") ?? ""}`))
+          || controls.filter((node) => /^(?:\+|−|-)$/u.test(node.textContent?.trim() ?? "")).length >= 2;
+        const hasItemName = ancestor.querySelector("[itemprop='name'], [data-product-name], h1, h2, h3, h4");
+        if (hasPrice && hasQuantity && hasItemName && (!cartPanel || text.length < (cartPanel.textContent?.length ?? Infinity))) {
+          cartPanel = ancestor;
+          break;
+        }
+        if (ancestor === root) break;
+      }
+    }
+    const scope = cartPanel ?? root;
+    const rows = [...scope.querySelectorAll(selectors)].filter((node) => (node as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+    const identities = rows.map((row) => {
+      const id = row.getAttribute("data-product-id") ?? row.getAttribute("data-sku")
+        ?? row.querySelector("[data-product-id], [data-sku], [itemprop='sku']")?.getAttribute("data-product-id")
+        ?? row.querySelector("[data-product-id], [data-sku], [itemprop='sku']")?.getAttribute("data-sku")
+        ?? row.querySelector("[itemprop='sku']")?.getAttribute("content");
+      if (id?.trim()) return `item:${id.trim()}`;
+      const anchor = row.matches("a[href]") ? row as HTMLAnchorElement : row.querySelector("a[href]");
+      if (anchor) {
+        try {
+          const route = new URL((anchor as HTMLAnchorElement).href, window.location.href);
+          if (route.origin === window.location.origin && route.pathname !== "/") return `url:${route.pathname.replace(/\/$/, "")}`;
+        } catch { /* Use a visible item name only when no stable same-site path exists. */ }
+      }
+      const nameNode = row.querySelector("[itemprop='name'], [data-product-name], [class*='product-name' i], [class*='goods-name' i], [class*='item-name' i], h1, h2, h3, h4");
+      const imageAlt = row.querySelector("img[alt]")?.getAttribute("alt") ?? "";
+      const name = (nameNode?.getAttribute("content") ?? nameNode?.getAttribute("data-product-name") ?? nameNode?.textContent ?? imageAlt).replace(/\s+/g, " ").trim();
+      const normalized = name.normalize("NFKC").toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, " ").trim().slice(0, 180);
+      return normalized.length >= 2 ? `name:${normalized}` : null;
+    });
+    const headings = [...scope.querySelectorAll("[itemprop='name'], [data-product-name], h1, h2, h3, h4")]
+      .filter((node) => (node as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }))
+      .filter((node) => !/(?:장바구니|쇼핑백|카트|cart|basket|shopping\s*bag)/i.test(node.textContent ?? ""));
+    const inferredRows = headings.map((heading) => {
+      let line: Element | null = null;
+      for (let ancestor = heading.parentElement; ancestor && scope.contains(ancestor); ancestor = ancestor.parentElement) {
+        const text = ancestor.textContent ?? "";
+        const hasPrice = /(?:[₩$£€]\s*\d[\d,.]*|\d[\d,.]*\s*원)/.test(text);
+        const controls = [...ancestor.querySelectorAll("input, select, button, [role='spinbutton']")]
+          .filter((node) => (node as HTMLElement).checkVisibility({ opacityProperty: true, visibilityProperty: true }));
+        const hasQuantity = controls.some((node) => node.matches('input[type="number"], input[role="spinbutton"], select, [role="spinbutton"]')
+          || /(?:수량|quantity|increase|decrease)/i.test(`${node.getAttribute("aria-label") ?? ""} ${node.getAttribute("title") ?? ""}`))
+          || controls.filter((node) => /^(?:\+|−|-)$/u.test(node.textContent?.trim() ?? "")).length >= 2;
+        if (hasPrice && hasQuantity) { line = ancestor; break; }
+        if (ancestor === scope) break;
+      }
+      if (!line) return null;
+      const value = (heading.getAttribute("content") ?? heading.getAttribute("data-product-name") ?? heading.textContent ?? "")
+        .replace(/\s+/g, " ").trim();
+      const normalized = value.normalize("NFKC").toLocaleLowerCase().replace(/[\p{P}\p{S}\s]+/gu, " ").trim().slice(0, 180);
+      return normalized.length >= 2 ? `name:${normalized}` : null;
+    });
+    const completeInferredRows = headings.length > 0 && inferredRows.length === headings.length && inferredRows.every(Boolean);
+    if (!rows.length && completeInferredRows) identities.push(...inferredRows);
+    const unique = [...new Set(identities.filter((identity): identity is string => Boolean(identity)))];
+    return { identities: unique, complete: rows.length > 0 ? identities.every(Boolean) : completeInferredRows };
+  }) : undefined;
   const textPrices = textLines.filter((line) =>
     /(?:[₩$£€]\s*\d[\d,.]*|\d[\d,.]*\s*원)/.test(line),
   ).slice(0, 100);
   const priceLines = [...new Set([...displayedPrices, ...textPrices, ...textFees.map(({ label }) => label)])];
+  const payableCandidates = await main.locator("span, p, strong, b, button").evaluateAll((nodes) => {
+    const amounts = new Set<number>();
+    for (const node of nodes) {
+      const element = node as HTMLElement;
+      if (element.children.length || !element.checkVisibility({ opacityProperty: true, visibilityProperty: true })) continue;
+      const value = element.innerText.replace(/\s+/g, " ").trim();
+      if (/배송|포장|수수료|이용료|정상가|정가|할인 전|원래 가격/i.test(value)) continue;
+      if (element.closest("s, del, strike")) continue;
+      let crossedOut = false;
+      for (let ancestor: Element | null = element; ancestor && ancestor !== element.ownerDocument.body; ancestor = ancestor.parentElement) {
+        if (getComputedStyle(ancestor).textDecorationLine.includes("line-through")) { crossedOut = true; break; }
+      }
+      if (crossedOut) continue;
+      const match = value.match(/^([₩]?\s*\d[\d,]*)\s*원(?:\s*(?:안전\s*)?(?:결제|주문)하기)?$/);
+      if (!match) continue;
+      const amount = Number(match[1].replace(/[^\d]/g, ""));
+      if (Number.isSafeInteger(amount) && amount > 0) amounts.add(amount);
+    }
+    return [...amounts];
+  });
+  const payableAmount = payableCandidates.length === 1 ? payableCandidates[0] : undefined;
   const precheckedSignals = await main.locator('input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"], [role="switch"][aria-checked="true"]').evaluateAll((nodes) => nodes.flatMap((node) => {
     const control = node as HTMLElement;
+    const labelledBy = (control.getAttribute("aria-labelledby") ?? "").split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id)?.innerText.trim() ?? "").filter(Boolean).join(" ");
+    const nativeLabel = control instanceof HTMLInputElement ? Array.from(control.labels ?? [], (item) => item.innerText.trim()).join(" ") : "";
     const label = control instanceof HTMLInputElement
-      ? Array.from(control.labels ?? [], (item) => item.innerText.trim()).join(" ")
-      : control.getAttribute("aria-label") ?? control.innerText.trim();
+      ? nativeLabel || control.getAttribute("aria-label") || ""
+      : control.getAttribute("aria-label") || labelledBy || control.innerText.trim();
     if (!/(?:마케팅|광고|정보\s*수신|자동\s*연장|자동\s*결제|멤버십|newsletter|marketing|auto.?renew)/i.test(label)) return [];
     const { x, y, width, height } = control.getBoundingClientRect();
     return [{ label, bounds: { x: x + window.scrollX, y: y + window.scrollY, width, height }, location: { frame: "main", visible: true, source: "dom" as const } }];
@@ -162,7 +320,13 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
   // PNG IHDR stores the rendered width and height as unsigned big-endian integers.
   const screenshotArea = { ...origin, width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
   const capturedAt = new Date().toISOString();
-  return { evidenceId: `evidence:${stage}`, stage, url, screenshot, screenshotArea, capturedAt, priceLines, textLines, options, fees, precheckedSignals, surfaceSignals, decisionControls, cartItemCount };
+  return { evidenceId: `evidence:${stage}`, stage, url, screenshot, screenshotArea, capturedAt, priceLines, payableAmount, payableCandidates, textLines, options, choiceControls, fees, precheckedSignals, surfaceSignals, decisionControls, cartItemCount, requestedQuantity, productIdentity,
+    ...(cartLines ? { cartLineIdentities: cartLines.identities, cartLinesComplete: cartLines.complete } : {}),
+    inspection: {
+      visibleText: "COMPLETE", controls: "COMPLETE", choiceControls: choiceControls.every(({ label }) => label.length > 0) ? "COMPLETE" : "INCOMPLETE", prices: "COMPLETE", feeRows: "COMPLETE",
+      cartCount: stage !== "cart" ? "NOT_APPLICABLE" : cartItemCount === undefined ? "UNAVAILABLE" : "OBSERVED",
+    },
+  };
 }
 
 export async function scanDemo(

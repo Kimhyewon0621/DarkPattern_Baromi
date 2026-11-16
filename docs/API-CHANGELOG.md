@@ -4,6 +4,35 @@
 
 ## 2026-11-16
 
+### 16개 유형별 판정 기준과 미관찰 기본값 명시
+
+- 변경: `ruleCoverage` 각 항목에 `decisionCriteria`를 추가해 바로미가 적용하는 유형별 엄격한 기준을 응답한다. 완료된 크롤링에서 해당 기준을 충족하는 신호가 없으면 `NOT_OBSERVED`; 크롤링이 결과를 만들 수 없을 정도로 완료되지 않은 경우에만 `NOT_TESTED`를 반환한다.
+- 프론트 영향: 보고서의 16개 항목에서 `decisionCriteria`를 상태·사유와 함께 표시할 수 있다. `NOT_OBSERVED`는 해당 크롤링 범위에서 바로미 기준에 맞는 신호를 찾지 못했다는 뜻이다.
+- 관련 endpoint: `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`.
+- 검증: 사용자의 요청에 따라 추가 검증은 실행하지 않았다.
+
+### 장바구니 담기 전 상태 근거 추가
+
+- 변경: 구매 흐름을 시작하기 전에 장바구니를 열어 명시적인 빈 상태 또는 보이는 품목 수를 확인한다. 스냅샷의 `cartBaselineVerified`는 이 기준 상태를 실제 화면에서 확인했는지 나타낸다. 확인할 수 없으면 자동 추가 판정은 미검사를 유지한다.
+- 프론트 영향: `Snapshot.cartBaselineVerified`와 `cartCountBeforeAdd`를 함께 읽어 보고서에서 담기 전 상태 확인 여부를 표시할 수 있다. `interactions[]`에도 초기 장바구니 관찰이 남는다.
+- 관련 endpoint: `GET /api/v1/scans/:scanId/report`.
+
+### 실패 종료 보고서 열기 연결
+
+- 변경: `GET /api/v1/scans/:scanId`의 공개 응답에 `hasReport`를 일관되게 제공한다. SQLite 저장소의 `reportPath`와 Spring 응답의 `reportAvailable`을 같은 boolean으로 정규화한다.
+- 프론트 영향: `FAILED`라도 `hasReport: true`이면 실패 안내와 함께 보고서를 열 수 있다. 보고서가 없을 때만 재진단 동작을 표시한다.
+- 단계 상태: 워커 예외 시 이미 끝난 단계는 보존하고 실제 실행 중 단계만 `FAILED`, 시작 전 단계는 `SKIPPED`로 닫는다. 실행 중 단계가 기록되지 않은 경우 첫 미실행 필수 단계만 `FAILED`가 된다.
+- 관련 endpoint: `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`.
+
+### 증거 완결성·단계 실패와 프론트 타입 동기화
+
+- 변경: 기본 엔진 판정에서 선택 상태, 가격/수수료 추출 완료 여부, 상품·장바구니 행 식별과 비교 검증 플래그를 스냅샷 증거로 노출한다. 장바구니의 비교 근거가 충분하지 않으면 `SNEAKY_CART_ADD`를 미관찰로 확정하지 않고 `NOT_TESTED`로 남긴다.
+- 변경: `DRIP_PRICING`은 신규 필수 비용을 찾으면 위험 신호를 내고, 상품·장바구니·주문서에서 가격/비용 추출과 동일 상품 비교가 모두 확인된 경우에만 `NOT_OBSERVED`를 반환한다. 총액이 불일치하거나 핵심 증거가 빠지면 `NOT_TESTED`를 유지한다.
+- 변경: 작업이 증거 수집 전에 실패하면 단계 상태를 첫 필수 단계 `FAILED`, 이후 단계 `SKIPPED`로 저장한다. 시작되지 않은 구매·탐색 단계를 가짜 `BLOCKED`/미발견으로 표시하지 않는다.
+- 프론트 영향: `web/lib/types.ts`를 보고서 스냅샷·가격 원장·크롤링 상세·상호작용·검토 후보·16개 판정 담당(`decisionMode`) 응답에 맞췄다. `phaseResults`의 실제 terminal 상태를 진행 화면에 사용한다.
+- 관련 endpoint: `GET /api/v1/scans/:scanId`, `GET /api/v1/scans/:scanId/report`.
+- 검증: 백엔드·프론트 타입 검사와 가격 판정 Playwright 회귀 4개 통과. 앞선 증거 판정 Playwright 테스트 7개와 `git diff --check`도 통과.
+
 ### 기본 보고서 JSON 요약·AI 전달 경계 고정
 
 - 변경: `summary` 네 값(`suspected`, `reviewNeeded`, `notObserved`, `notTested`)을 `ruleCoverage`의 16개 최종 상태에서 계산한다. 발견 항목 수와 전체 유형 상태 수가 혼동되지 않게 하고, 종료 보고서에서는 네 값의 합이 16이다.
@@ -228,6 +257,14 @@
 - 환경변수: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (선택적으로 서버 전용 `SUPABASE_URL`, `SUPABASE_ANON_KEY`). service-role 키는 사용하지 않는다.
 - API 응답 스키마 변경: 없음. `DELETE /session`은 레거시 자체 세션만 종료하며 Supabase 로그아웃은 `auth.signOut()`으로 처리한다.
 - 미검증: 실제 Supabase 프로젝트 설정이 없어 이메일 인증 설정, redirect allowlist, 로그인 후 진단 API 연결은 아직 실제 프로젝트에서 확인하지 않았다.
+
+### 2026-11-16 — 단계 완료 즉시 반영 및 인증 전 선택지 추출 표식
+
+- 변경: 구매 화면의 증거 캡처가 끝나면 해당 단계는 즉시 `COVERED`로 저장하고, 다음 구매 단계만 `RUNNING`으로 전환한다. 진행 화면은 전체 사이트 크롤링 상태와 현재 URL도 표시한다.
+- 판정: `PRESELECTION`을 `NOT_OBSERVED`로 닫기 전에 인증 전 로그인·가입 화면의 초기 선택 상태까지 확인한다. 인증 화면에서 발견한 선택 동의도 위험 신호에 포함한다.
+- 응답 변경: `GET /api/v1/scans/:scanId/report`의 `siteCrawl.pages[]`에 `interactiveInventoryComplete?: boolean`을 추가했다. 이는 컨트롤 목록 추출 완료 표식이며 `interactiveCount`(클릭 동작 수)와 별개다.
+- 프론트 영향: 진행 화면에서 전체 쇼핑몰 탐색 상태·현재 URL·완료 시간을 볼 수 있다. 사전 선택이 완전히 검사되지 않은 경우 기본 보고서에서 미검사로 표시한다.
+- 검증: 백엔드·프론트 타입 검사 및 5개 판정/상태 테스트 통과. 실제 진단 화면 E2E는 현재 브라우저 세션이 로그인 화면으로 이동해 수행하지 못했다.
 
 각 항목에 다음 정보를 포함한다.
 

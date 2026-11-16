@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { decryptCredentials, encryptCredentials } from "../src/credential-vault";
@@ -94,10 +94,14 @@ test("AI 공급자에는 내부 증거 ID를 보내지 않고 응답 후보를 �
 import { scanDemo } from "../src/scan";
 import { paidOptionFromText } from "../src/price-text";
 import { detect } from "../src/rules";
-import { buildRuleCoverage } from "../src/rule-coverage";
-import { initialScanPhases, parseScanPhases, updateScanPhase } from "../src/scan-phases";
+import { buildRuleCoverage, findingsForRuleCoverage } from "../src/rule-coverage";
+import { closeFailedScanPhases, initialScanPhases, nextPurchaseStage, parseScanPhases, updateScanPhase } from "../src/scan-phases";
 
 test("진단 단계 상태는 시작·종료 시간과 증거를 보존하고 바로구매의 장바구니는 건너뛴다", () => {
+  expect(nextPurchaseStage("product", "CART")).toBe("cart");
+  expect(nextPurchaseStage("product", "DIRECT")).toBe("checkout");
+  expect(nextPurchaseStage("cart", "CART")).toBe("checkout");
+  expect(nextPurchaseStage("checkout", "CART")).toBeUndefined();
   const initial = initialScanPhases("DIRECT", true);
   expect(initial.cart?.status).toBe("SKIPPED");
   expect(initial["surface:CATALOG"]?.status).toBe("PENDING");
@@ -106,6 +110,23 @@ test("진단 단계 상태는 시작·종료 시간과 증거를 보존하고 �
   const finished = updateScanPhase(started, "product", { status: "COVERED", evidenceIds: ["e-product"] }, new Date("2026-11-15T00:00:02.500Z"));
   expect(finished.product).toMatchObject({ status: "COVERED", durationMs: 2500, evidenceIds: ["e-product"] });
   expect(parseScanPhases(JSON.stringify(finished))).toEqual(finished);
+});
+
+test("작업기 실패는 실행 중 단계만 실패시키고 시작 전 단계는 건너뜀으로 닫는다", () => {
+  const initial = initialScanPhases("DIRECT", true);
+  const running = updateScanPhase(initial, "product", { status: "RUNNING" }, new Date("2026-11-16T00:00:00.000Z"));
+  const closed = closeFailedScanPhases(running, "테스트 실패");
+  expect(closed.product).toMatchObject({ status: "FAILED", reason: "테스트 실패" });
+  expect(closed.cart).toMatchObject({ status: "SKIPPED", reason: expect.stringContaining("바로구매") });
+  expect(closed.checkout).toMatchObject({ status: "SKIPPED", reason: expect.stringContaining("앞 단계 실패") });
+  expect(closed["surface:CATALOG"]).toMatchObject({ status: "SKIPPED", reason: expect.stringContaining("앞 단계 실패") });
+  expect(closed["site-crawl"]).toMatchObject({ status: "SKIPPED", reason: expect.stringContaining("앞 단계 실패") });
+  expect(Object.values(closed).every((phase) => phase.status !== "PENDING" && phase.status !== "RUNNING")).toBe(true);
+
+  const beforeStart = closeFailedScanPhases(initialScanPhases("CART", true), "작업 시작 전 실패");
+  expect(beforeStart.product).toMatchObject({ status: "FAILED", reason: "작업 시작 전 실패" });
+  expect(beforeStart.cart?.status).toBe("SKIPPED");
+  expect(beforeStart.checkout?.status).toBe("SKIPPED");
 });
 
 test("전체 크롤러는 사이트맵과 내부 링크를 큐가 빌 때까지 방문하고 위험 경로는 실행하지 않는다", async ({ browser }) => {
@@ -714,6 +735,25 @@ test("재진단은 같은 항목의 변화만 비교하고 누락된 단계는 �
   expect(compareScans(before, { ...after, comparisonVersion: undefined }).status).toBe("UNAVAILABLE");
 });
 
+test("장바구니 자동 추가 검사 전에 실제 빈 장바구니 상태를 읽고 원래 화면으로 돌아온다", async ({ page }) => {
+  const { inspectInitialCart } = await import("../src/purchase-journey");
+  await page.route("https://cart-baseline.example/**", async (route) => route.fulfill({
+    contentType: "text/html; charset=utf-8",
+    body: `<button>장바구니</button>`,
+  }));
+  await page.goto("https://cart-baseline.example/");
+  await page.getByRole("button", { name: "장바구니" }).evaluate((button) => button.addEventListener("click", () => {
+    const panel = document.createElement("div");
+    panel.className = "fixed inset-0";
+    panel.innerHTML = "<span>장바구니 (0)</span><p>장바구니가 비어 있습니다. 마음에 드는 상품을 담아보세요.</p>";
+    document.body.append(panel);
+  }));
+  const baseline = await inspectInitialCart(page);
+  expect(baseline).toEqual({ count: 0, verifiedEmpty: true });
+  expect(await page.locator(".fixed.inset-0").count()).toBe(0);
+  expect(page.url()).toBe("https://cart-baseline.example/");
+});
+
 test("동적 탐색은 주문서까지만 이동하고 가격 API의 비식별 숫자만 수집한다", async ({ page }) => {
   const { explorePurchaseJourney } = await import("../src/purchase-journey");
   await page.context().route("https://journey.example/**", async (route) => {
@@ -988,6 +1028,81 @@ test("일반적인 상품 옵션 문구의 명시적 추가금을 유료 옵션�
   expect(paidOptionFromText("무료 배송")).toBeNull();
 });
 
+test("접근성 역할로 만든 사전 선택 유료 옵션도 상태와 라벨을 수집한다", async ({ page }) => {
+  const { capture } = await import("../src/scan");
+  await page.setContent(`<main><span id="insurance-label">파손 보장 (+1,400원)</span><div role="checkbox" aria-labelledby="insurance-label" aria-checked="true" data-option-won="1400"></div><span id="consent-label">야간 광고성 정보 수신 동의</span><div role="checkbox" aria-labelledby="consent-label" aria-checked="true"></div></main>`);
+  const directory = join(process.env.SCAN_RESULTS_DIR!, "semantic-choice-control");
+  await mkdir(directory, { recursive: true });
+  const snapshot = await capture(page, "product", directory, page.locator("main"), "https://shop.example/product", false);
+  expect(snapshot.choiceControls).toEqual(expect.arrayContaining([
+    expect.objectContaining({ label: "파손 보장 (+1,400원)", selected: true, kind: "CHECKBOX", amount: 1400 }),
+    expect.objectContaining({ label: "야간 광고성 정보 수신 동의", selected: true, kind: "CHECKBOX" }),
+  ]));
+  expect(snapshot.precheckedSignals).toEqual([expect.objectContaining({ label: "야간 광고성 정보 수신 동의" })]);
+  expect(detect([snapshot])).toEqual([expect.objectContaining({ type: "PRESELECTION", status: "SUSPECTED" })]);
+});
+
+test("상품 메타데이터와 장바구니 행에서 같은 상품 식별자를 수집한다", async ({ page }) => {
+  const { capture } = await import("../src/scan");
+  await page.route("https://identity-shop.example/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/product/linen"
+      ? `<main><h1>리넨 셔츠</h1><span data-product-id="SKU-42"></span><input type="number" value="1"></main>`
+      : `<main><h1>장바구니 1개</h1><div data-cart-item data-product-id="SKU-42"><a href="/product/linen">리넨 셔츠</a><input type="number" value="1"></div></main>`;
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body });
+  });
+  const directory = join(process.env.SCAN_RESULTS_DIR!, "cart-identity");
+  await mkdir(directory, { recursive: true });
+  await page.goto("https://identity-shop.example/product/linen");
+  const product = await capture(page, "product", directory, page.locator("main"), page.url(), false);
+  await page.goto("https://identity-shop.example/cart");
+  const cart = await capture(page, "cart", directory, page.locator("main"), page.url(), false);
+  expect(product.productIdentity).toBe("item:SKU-42");
+  expect(cart.cartLineIdentities).toEqual(["item:SKU-42"]);
+  expect(cart.cartLinesComplete).toBe(true);
+});
+
+test("상품 ID·경로가 없는 SPA 상품도 보이는 상품명으로 장바구니 행과 연결한다", async ({ page }) => {
+  const { capture } = await import("../src/scan");
+  await page.route("https://spa-cart.example/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/cart"
+      ? `<main><h1>장바구니 1개</h1><div class="cart-item"><span class="item-name">데일리 리넨 셔츠</span><span>29,000원</span><input type="number" value="1"></div></main>`
+      : `<main><section role="dialog"><h2>데일리 리넨 셔츠</h2><span>29,000원</span><button>장바구니 담기</button></section></main>`;
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body });
+  });
+  const directory = join(process.env.SCAN_RESULTS_DIR!, "spa-cart-name-identity");
+  await mkdir(directory, { recursive: true });
+  await page.goto("https://spa-cart.example/");
+  const product = await capture(page, "product", directory, page.getByRole("dialog"), page.url(), false);
+  await page.goto("https://spa-cart.example/cart");
+  const cart = await capture(page, "cart", directory, page.locator("main"), page.url(), false);
+  expect(product.productIdentity).toBe("name:데일리 리넨 셔츠");
+  expect(cart.cartLineIdentities).toEqual(["name:데일리 리넨 셔츠"]);
+  expect(cart.cartLinesComplete).toBe(true);
+});
+
+test("접근성·상품행 속성이 없는 장바구니 서랍도 수량 조절기와 상품명으로 행을 연결한다", async ({ page }) => {
+  const { capture } = await import("../src/scan");
+  await page.route("https://drawer-cart.example/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = path === "/cart"
+      ? `<main><article><h3>아르코 무선 테이블 램프</h3><span>68,000원</span><button>담기</button></article><div class="fixed inset-0"><div class="w-screen max-w-md"><header><span>장바구니 (1)</span></header><div class="flex-1 overflow-y-auto"><div class="flex space-x-3.5 p-3"><div class="flex-1"><h4>아르코 무선 테이블 램프</h4><span>색상: 매트 실버</span><button>-</button><span>1</span><button>+</button><span>68,000원</span></div></div></div></div></main>`
+      : `<main><section role="dialog"><h2>아르코 무선 테이블 램프</h2><span>68,000원</span><div><button>-</button><span>1</span><button>+</button></div><button>장바구니 담기</button></section></main>`;
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body });
+  });
+  const directory = join(process.env.SCAN_RESULTS_DIR!, "drawer-cart-identity");
+  await mkdir(directory, { recursive: true });
+  await page.goto("https://drawer-cart.example/");
+  const product = await capture(page, "product", directory, page.getByRole("dialog"), page.url(), false);
+  await page.goto("https://drawer-cart.example/cart");
+  const cart = await capture(page, "cart", directory, page.locator(".fixed.inset-0"), page.url(), false);
+  expect(product.productIdentity).toBe("name:아르코 무선 테이블 램프");
+  expect(product.requestedQuantity).toBe(1);
+  expect(cart.cartLineIdentities).toEqual(["name:아르코 무선 테이블 램프"]);
+  expect(cart.cartLinesComplete).toBe(true);
+});
+
 test("주문서의 유료 사전선택은 판정하고 동의 문구는 의미를 추정하지 않은 근거로 남긴다", async () => {
   const { collectReviewCandidates } = await import("../src/review-candidates");
   const bounds = { x: 0, y: 0, width: 100, height: 20 };
@@ -1044,9 +1159,24 @@ test("격리 장바구니에 한 번 담은 뒤 여러 품목이 보이면 몰�
 
 test("격리 장바구니에 요청한 한 품목만 있으면 몰래 추가 신호가 없고 검사 완료로 남긴다", () => {
   const product = { stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", priceLines: [], textLines: [], options: [], fees: [] };
-  const cart = { stage: "cart" as const, url: "https://shop.example.com/cart", screenshot: "cart.png", priceLines: [], textLines: ["장바구니 (1)"], options: [], fees: [], cartItemCount: 1 };
+  const cart = {
+    stage: "cart" as const, url: "https://shop.example.com/cart", screenshot: "cart.png", priceLines: [], textLines: ["장바구니 (1)"], options: [], fees: [], cartItemCount: 1,
+    cartCountBeforeAdd: 0, requestedQuantity: 1, requestedProductIdentity: "item:SKU-42",
+    cartLineIdentities: ["item:SKU-42"], cartLinesComplete: true, cartContentsVerified: true,
+    inspection: { visibleText: "COMPLETE" as const, controls: "COMPLETE" as const, choiceControls: "COMPLETE" as const, prices: "COMPLETE" as const, feeRows: "COMPLETE" as const, cartCount: "OBSERVED" as const },
+  };
   expect(detect([product, cart]).some(({ type }) => type === "SNEAKY_CART_ADD")).toBe(false);
   expect(buildRuleCoverage({ findings: [], snapshots: [product, cart], surfaceObservations: [] }).SNEAKY_CART_ADD.status).toBe("NOT_OBSERVED");
+});
+
+test("담은 뒤 다른 상품 행이 보여도 담기 전 장바구니 행을 검증하지 못하면 위험 신호로 만들지 않는다", () => {
+  const cart = {
+    stage: "cart" as const, url: "https://shop.example.com/cart", screenshot: "cart.png", priceLines: [], textLines: [], options: [], fees: [], cartItemCount: 2,
+    cartCountBeforeAdd: 0, requestedQuantity: 1, requestedProductIdentity: "item:SKU-42",
+    cartLineIdentities: ["item:SKU-42", "item:SKU-99"], cartLinesComplete: true, cartContentsVerified: false,
+    inspection: { visibleText: "COMPLETE" as const, controls: "COMPLETE" as const, choiceControls: "COMPLETE" as const, prices: "COMPLETE" as const, feeRows: "COMPLETE" as const, cartCount: "OBSERVED" as const },
+  };
+  expect(detect([cart])).toEqual([]);
 });
 
 test("확장 가이드라인 문구만으로 유형을 판정하지 않고 구매 화면 증거를 보존한다", async () => {
@@ -1095,8 +1225,23 @@ test("크롤된 시각 측정은 문구 기반 계층 판정 없이 원본 화�
   expect(candidates).toMatchObject([expect.objectContaining({ kind: "SEMANTIC_REVIEW", evidenceIds: ["site-page:header"] })]);
   expect(candidates[0]).not.toHaveProperty("ruleType");
   expect(buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates }).MISDIRECTED_HIERARCHY).toEqual(expect.objectContaining({
-    status: "NOT_TESTED", evidenceIds: [], reason: expect.stringContaining("checkout 화면"),
+    status: "NOT_TESTED", evidenceIds: [], reason: expect.stringContaining("같은 결정"),
   }));
+});
+
+test("보고서 후보 상한이 개별 규칙에 연결된 근거를 일반 화면 메모보다 우선 보존한다", async () => {
+  const { limitReviewCandidates } = await import("../src/review-candidates");
+  const generic = Array.from({ length: 40 }, (_, index) => ({
+    id: `generic:${index}`, kind: "SEMANTIC_REVIEW" as const, stage: "surface" as const,
+    text: `화면 메모 ${index}`, reason: "관찰 근거", evidenceIds: [`page:${index}`],
+  }));
+  const typed = {
+    id: "rule:misdirected", kind: "VISUAL_ACCESSIBILITY" as const, stage: "surface" as const,
+    text: "작고 흐린 로그아웃 버튼", reason: "같은 영역의 컨트롤과 비교됨", evidenceIds: ["page:header"],
+    ruleType: "MISDIRECTED_HIERARCHY" as const,
+  };
+  expect(limitReviewCandidates([...generic, typed])).toContainEqual(typed);
+  expect(limitReviewCandidates([...generic, typed])).toHaveLength(40);
 });
 
 test("크롤한 MEGA 유형별 화면 증거가 16개 규칙 보고서의 검토 상태와 근거 ID에 연결된다", async () => {
@@ -1143,6 +1288,15 @@ test("관련 화면을 수집한 맥락형 유형은 해당 유형이 고정된 
   expect(coverage.HIDDEN_SUBSCRIPTION.status).toBe("NOT_TESTED");
   expect(coverage.HIDDEN_INFO.status).toBe("NOT_TESTED");
   expect(coverage.PRESELECTION.decisionMode).toBe("BASIC_ENGINE");
+  const ordinaryProduct = { ...product, evidenceId: "evidence:ordinary-product", textLines: ["상품명 데일리 셔츠", "판매가 29,000원", "추가 비용은 결제 화면에서 확인"], priceLines: ["29,000원"] };
+  const ordinaryCandidates = collectRuleReviewCandidates({ snapshots: [ordinaryProduct], surfaces: [], crawlPages: [] });
+  expect(ordinaryCandidates).toEqual(expect.arrayContaining([expect.objectContaining({
+    ruleType: "HIDDEN_INFO", evidenceIds: ["evidence:ordinary-product"],
+  })]));
+  const ordinaryCoverage = buildRuleCoverage({ findings: [], snapshots: [ordinaryProduct], reviewCandidates: ordinaryCandidates });
+  expect(ordinaryCoverage.HIDDEN_INFO).toMatchObject({ status: "REVIEW_NEEDED", decisionMode: "AI_CONTEXT", evidenceIds: ["evidence:ordinary-product"] });
+  const noEvidenceCoverage = buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: ordinaryCandidates });
+  expect(noEvidenceCoverage.URGENCY_SCARCITY.status).toBe("NOT_TESTED");
 });
 
 test("관련 화면 증거가 없으면 맥락형 AI 후보를 만들지 않고 미검사로 둔다", async () => {
@@ -1303,7 +1457,52 @@ test("로그인 전 화면의 비필수 동의 초기 선택만 사전 선택으
   expect(detectInitialConsentPreselection([{ ...page, interactives: [{ ...page.interactives[0], selected: false }] }])).toEqual([]);
 });
 
-test("유인 판매는 같은 상품의 구매 불가와 대체 상품 제안을 함께 확인한다", () => {
+test("인증 전 로그인 경로에서 발견한 선택 동의도 잡고 인증 완료 뒤 상태는 제외한다", async () => {
+  const { detectInitialConsentPreselection } = await import("../src/detectors/preselection");
+  const page = {
+    evidenceId: "site-page:login-route", url: "https://shop.example.com/member/login", title: "회원 로그인",
+    outcome: "OBSERVED", statePath: [], interactiveCount: 1, interactiveInventoryComplete: true, interactives: [
+      { label: "이메일", type: "email", visible: true },
+      { label: "비밀번호", type: "password", visible: true },
+      { label: "VIP 프라임 무료 체험 및 자동 연장 동의", type: "checkbox", visible: true, selected: true },
+    ],
+  } as unknown as import("../src/site-crawler").CrawledSitePage;
+  expect(detectInitialConsentPreselection([page])).toEqual([expect.objectContaining({
+    type: "PRESELECTION", status: "SUSPECTED", evidenceIds: ["site-page:login-route"],
+  })]);
+  const cleanLoginPage = { ...page, evidenceId: "site-page:login-clean", interactives: page.interactives.slice(0, 2), interactiveCount: 2 };
+  expect(detectInitialConsentPreselection([cleanLoginPage, page])).toEqual([expect.objectContaining({
+    evidenceIds: ["site-page:login-route"],
+  })]);
+  expect(detectInitialConsentPreselection([{ ...page, statePath: ["로그인 후 화면"] }])).toEqual([]);
+});
+
+test("사전 선택을 미관찰로 닫으려면 인증 전 화면의 선택지까지 완전하게 읽어야 한다", () => {
+  const inspection = { visibleText: "COMPLETE" as const, controls: "COMPLETE" as const,
+    choiceControls: "COMPLETE" as const, prices: "COMPLETE" as const, feeRows: "COMPLETE" as const,
+    cartCount: "NOT_APPLICABLE" as const };
+  const snapshots = [
+    { evidenceId: "product:clean", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", priceLines: [], textLines: [], options: [], fees: [], choiceControls: [], inspection },
+    { evidenceId: "checkout:clean", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png", priceLines: [], textLines: [], options: [], fees: [], choiceControls: [], inspection },
+  ];
+  const loginPage = {
+    evidenceId: "site-page:login", url: "https://shop.example.com/member/login", title: "로그인", outcome: "OBSERVED" as const,
+    statePath: [], interactiveCount: 0, interactiveInventoryComplete: true, interactives: [
+      { label: "이메일", type: "email", visible: true }, { label: "비밀번호", type: "password", visible: true },
+    ],
+  } as unknown as import("../src/site-crawler").CrawledSitePage;
+  expect(buildRuleCoverage({ findings: [], snapshots }).PRESELECTION).toMatchObject({
+    status: "NOT_TESTED", reason: expect.stringContaining("인증 전 로그인·가입 화면"),
+  });
+  expect(buildRuleCoverage({ findings: [], snapshots, siteCrawl: { complete: true, pages: [{ ...loginPage, interactiveInventoryComplete: false }] } }).PRESELECTION).toMatchObject({
+    status: "NOT_TESTED", reason: expect.stringContaining("추출이 불완전"),
+  });
+  expect(buildRuleCoverage({ findings: [], snapshots, siteCrawl: { complete: true, pages: [loginPage] } }).PRESELECTION).toMatchObject({
+    status: "NOT_OBSERVED", evidenceIds: expect.arrayContaining(["site-page:login"]),
+  });
+});
+
+test("유인 판매는 같은 상품의 구매 불가와 대체 상품 제안이 모두 있을 때만 위험 신호로 본다", () => {
   const listing = {
     status: "OBSERVED" as const, url: "https://shop.example.com/", productUrl: "https://shop.example.com/product/1",
     text: "상품 18,000원 구매하기", amounts: [18000], feeMentions: [], screenshot: "listing.png", capturedAt: "2026-11-15T00:00:00Z",
@@ -1316,14 +1515,48 @@ test("유인 판매는 같은 상품의 구매 불가와 대체 상품 제안을
   expect(detect([product], [], [], listing)).toEqual([expect.objectContaining({
     type: "BAIT_SELLING", status: "SUSPECTED", evidenceIds: ["price:first-exposure", "product:1"],
   })]);
-  expect(detect([{ ...product, decisionControls: [], textLines: ["현재 품절"] }], [], [], listing)).toEqual([
-    expect.objectContaining({ type: "BAIT_SELLING", status: "REVIEW_NEEDED" }),
-  ]);
+  expect(detect([{ ...product, decisionControls: [], textLines: ["현재 품절"] }], [], [], listing)).toEqual([]);
   expect(detect([{ ...product, textLines: ["구매 가능합니다"] }], [], [], listing).some(({ type }) => type === "BAIT_SELLING")).toBe(false);
   expect(detect([{ ...product, url: "https://shop.example.com/product/other" }], [], [], listing).some(({ type }) => type === "BAIT_SELLING")).toBe(false);
   const checkout = { ...product, evidenceId: "checkout:1", stage: "checkout" as const, url: "https://shop.example.com/checkout", textLines: ["주문서"] };
-  const normal = buildRuleCoverage({ findings: [], snapshots: [{ ...product, textLines: ["구매 가능"] }, checkout], firstPriceExposure: listing });
-  expect(normal.BAIT_SELLING).toMatchObject({ status: "NOT_OBSERVED", evidenceIds: ["price:first-exposure", "product:1", "checkout:1"] });
+  const cleanProduct = { ...product, textLines: ["구매 가능"] };
+  const unverifiedCart = { ...product, evidenceId: "cart:1", stage: "cart" as const, url: "https://shop.example.com/cart" };
+  const normal = buildRuleCoverage({ findings: [], snapshots: [cleanProduct, unverifiedCart, checkout], firstPriceExposure: listing });
+  expect(normal.BAIT_SELLING.status).toBe("NOT_TESTED");
+  const verifiedCart = { ...unverifiedCart, cartContentsVerified: true };
+  const verified = buildRuleCoverage({ findings: [], snapshots: [cleanProduct, verifiedCart, checkout], firstPriceExposure: listing });
+  expect(verified.BAIT_SELLING).toMatchObject({ status: "NOT_OBSERVED", evidenceIds: ["price:first-exposure", "product:1", "cart:1", "checkout:1"] });
+});
+
+test("SPA 상품 카드 가격을 선택한 상세 상태와 연결하고 동일 상품을 확인한다", async () => {
+  const { firstPriceExposureFromCrawl } = await import("../src/crawl-price-exposure");
+  const title = "아르코 모던 미니멀 무선 테이블 램프";
+  const url = "https://shop.example.com/";
+  const page = (value: Record<string, unknown>) => value as unknown as import("../src/site-crawler").CrawledSitePage;
+  const pages = [
+    page({
+      evidenceId: "site-page:listing", url, statePath: [], productCardsFound: [title],
+      text: `상품 목록\n담기\n${title}\n68,000원\n85,000원\n배송비 3,000원`, capturedAt: "2026-11-16T00:00:00Z",
+    }),
+    page({
+      evidenceId: "site-page:detail", url, statePath: [`__OPEN_PRODUCT_CARD__:0:${title}`], productCardsFound: [],
+      text: `${title}\n68,000원\n장바구니 담기`, capturedAt: "2026-11-16T00:00:01Z",
+    }),
+  ];
+  const product = {
+    evidenceId: "product:spa", stage: "product" as const, url, screenshot: "product.png", productIdentity: `name:${title}`,
+    priceLines: ["68,000원"], textLines: ["구매 가능"], options: [], fees: [],
+  };
+  const exposure = firstPriceExposureFromCrawl(pages, product);
+  expect(exposure).toMatchObject({
+    status: "OBSERVED", url, productUrl: url, amounts: [68000, 85000],
+    productIdentity: product.productIdentity, sourceEvidenceIds: ["site-page:listing", "site-page:detail"],
+  });
+  const cart = { ...product, evidenceId: "cart:spa", stage: "cart" as const, cartContentsVerified: true };
+  const checkout = { ...product, evidenceId: "checkout:spa", stage: "checkout" as const };
+  const { assessBaitSelling } = await import("../src/detectors/bait-selling");
+  expect(assessBaitSelling(exposure, [product, cart, checkout])).toMatchObject({ status: "NOT_OBSERVED" });
+  expect(assessBaitSelling(exposure, [{ ...product, productIdentity: "name:다른 상품" }, cart, checkout])).toBeNull();
 });
 
 test("같은 결정의 선택지는 면적·대비·키보드 접근을 함께 비교한다", async () => {
@@ -1335,10 +1568,70 @@ test("같은 결정의 선택지는 면적·대비·키보드 접근을 함께 �
   const yes = { kind: "BUTTON" as const, label: "혜택에 동의하고 계속", bounds: { x: 0, y: 0, width: 200, height: 50 }, color: "rgb(255, 255, 255)", backgroundColor: "rgb(0, 0, 0)", opacity: 1, tabIndex: 0, group: "form:0" };
   const no = { kind: "BUTTON" as const, label: "아니오, 거절", bounds: { x: 0, y: 55, width: 200, height: 50 }, color: "rgb(0, 0, 0)", backgroundColor: "rgb(255, 255, 255)", opacity: 1, tabIndex: 0, group: "form:0" };
   expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, no] })?.status).toBe("NOT_OBSERVED");
-  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, { ...no, bounds: { ...no.bounds, width: 50, height: 20 } }] })?.status).toBe("REVIEW_NEEDED");
+  expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, { ...no, bounds: { ...no.bounds, width: 50, height: 20 } }] })?.status).toBe("NOT_OBSERVED");
   const obscured = { ...no, bounds: { ...no.bounds, width: 50, height: 20 }, opacity: 0.3, tabIndex: -1 };
   expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes, obscured] })?.status).toBe("SUSPECTED");
   expect(assessMisdirectedHierarchy({ ...base, decisionControls: [yes] })).toBeNull();
+});
+
+test("같은 상단 내비게이션의 작고 흐린 로그아웃 컨트롤은 계층구조 검토 근거로 연결한다", async () => {
+  const { collectCrawlRuleCandidates } = await import("../src/review-candidates");
+  const { buildRuleCoverage } = await import("../src/rule-coverage");
+  const page = {
+    evidenceId: "site-page:account-nav", url: "https://shop.example.com/", outcome: "OBSERVED",
+    domText: [
+      { tag: "button", text: "로그아웃", visible: true, interactive: true, fontSize: "10px", color: "oklch(0.708 0 none)", backgroundColor: "rgb(255, 255, 255)", opacity: "1", bounds: { x: 10, y: 10, width: 48, height: 13 }, region: "header:0" },
+      { tag: "button", text: "주문조회", visible: true, interactive: true, fontSize: "16px", color: "oklch(0.371 0 none)", backgroundColor: "rgb(255, 255, 255)", opacity: "1", bounds: { x: 70, y: 10, width: 70, height: 20 }, region: "header:0" },
+      { tag: "button", text: "장바구니", visible: true, interactive: true, fontSize: "16px", color: "oklch(0.371 0 none)", backgroundColor: "rgb(255, 255, 255)", opacity: "1", bounds: { x: 150, y: 10, width: 70, height: 20 }, region: "header:0" },
+    ], interactives: [],
+  } as unknown as import("../src/site-crawler").CrawledSitePage;
+  const candidates = collectCrawlRuleCandidates([page]);
+  expect(candidates).toEqual([expect.objectContaining({
+    ruleType: "MISDIRECTED_HIERARCHY", evidenceIds: ["site-page:account-nav"], kind: "VISUAL_ACCESSIBILITY",
+  })]);
+  expect(buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates }).MISDIRECTED_HIERARCHY).toMatchObject({
+    status: "REVIEW_NEEDED", evidenceIds: ["site-page:account-nav"],
+  });
+
+  const uniform = { ...page, evidenceId: "site-page:uniform-nav", domText: page.domText.map((item) => ({ ...item, fontSize: "16px", color: "rgb(30, 30, 30)" })) };
+  expect(collectCrawlRuleCandidates([uniform])).toEqual([expect.objectContaining({ evidenceIds: ["site-page:uniform-nav"] })]);
+  expect(collectCrawlRuleCandidates([{ ...page, domText: page.domText.slice(0, 1) }])).toEqual([expect.objectContaining({
+    evidenceIds: ["site-page:account-nav"],
+  })]);
+});
+
+test("실제 크롤러가 내비게이션의 시각 근거를 수집해 계층구조 판정에 연결한다", async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await context.route("https://visual-evidence.test/**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === "/robots.txt") return route.fulfill({ contentType: "text/plain", body: "User-agent: *" });
+    if (url.pathname === "/sitemap.xml") return route.fulfill({ contentType: "application/xml", body: "<urlset></urlset>" });
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body: `<!doctype html><html><body><header style="background:#fff"><nav>
+      <button style="font-size:10px;color:oklch(0.708 0 none);background:white">로그아웃</button>
+      <button style="font-size:16px;color:oklch(0.371 0 none);background:white">주문조회</button>
+      <button style="font-size:16px;color:oklch(0.371 0 none);background:white">장바구니</button>
+    </nav></header></body></html>` });
+  });
+  try {
+    await page.goto("https://visual-evidence.test/");
+    const { crawlShopSite } = await import("../src/site-crawler");
+    const { collectCrawlRuleCandidates } = await import("../src/review-candidates");
+    const { buildRuleCoverage } = await import("../src/rule-coverage");
+    const result = await crawlShopSite(page, page.url(), undefined, undefined, { concurrency: 1, maxPages: 10, maxDurationMs: 10_000 });
+    const crawled = result.pages[0];
+    const logout = crawled.domText.find(({ text }) => text === "로그아웃");
+    expect(logout, JSON.stringify({ pages: result.pages.map(({ url, outcome, failureReason }) => ({ url, outcome, failureReason })) })).toBeDefined();
+    expect(logout).toMatchObject({
+      region: "nav:1", backgroundColor: "rgb(255, 255, 255)", fontSize: "10px", interactive: true,
+    });
+    const candidates = collectCrawlRuleCandidates(result.pages);
+  expect(buildRuleCoverage({ findings: [], snapshots: [], reviewCandidates: candidates }).MISDIRECTED_HIERARCHY).toMatchObject({
+      status: "SUSPECTED", evidenceIds: [crawled.evidenceId],
+    });
+  } finally {
+    await context.close();
+  }
 });
 
 test("온라인 가입 대비 전화 전용 해지와 직접 해지 경로를 구분한다", async () => {
@@ -1360,18 +1653,23 @@ test("온라인 가입 대비 전화 전용 해지와 직접 해지 경로를 �
 
 test("월 납부액과 의무 기간만 먼저 보여준 뒤 총액을 주문서에서 공개하면 가격 비교 신호로 남긴다", async () => {
   const { assessPriceComparison } = await import("../src/detectors/price-comparison");
-  const product = { evidenceId: "product:installment", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png",
+  const product = { evidenceId: "product:installment", stage: "product" as const, url: "https://shop.example.com/product", screenshot: "product.png", productIdentity: "sku:1",
     priceLines: ["월 9,900원"], textLines: ["12개월 약정"], options: [], fees: [] };
   const checkout = { evidenceId: "checkout:installment", stage: "checkout" as const, url: "https://shop.example.com/checkout", screenshot: "checkout.png",
     priceLines: ["총 결제 금액 118,800원"], textLines: [], options: [], fees: [] };
-  const cart = { ...checkout, evidenceId: "cart:single", stage: "cart" as const, cartItemCount: 1 };
-  expect(assessPriceComparison([product, checkout])?.status).toBe("REVIEW_NEEDED");
+  const cart = { ...checkout, evidenceId: "cart:single", stage: "cart" as const, cartItemCount: 1, cartContentsVerified: true,
+    requestedQuantity: 1, requestedProductIdentity: "sku:1", cartLineIdentities: ["sku:1"] };
+  expect(assessPriceComparison([product, checkout])?.status).toBeUndefined();
   expect(assessPriceComparison([product, cart, checkout])?.status).toBe("SUSPECTED");
-  expect(assessPriceComparison([product, cart, { ...checkout, options: [{ label: "추가 보증", won: 1000, selected: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }] }])?.status).toBe("REVIEW_NEEDED");
+  expect(assessPriceComparison([product, cart, { ...checkout, options: [{ label: "추가 보증", won: 1000, selected: true, bounds: { x: 0, y: 0, width: 20, height: 20 } }] }])?.status).toBeUndefined();
   expect(detect([product, cart, checkout])).toEqual([expect.objectContaining({ type: "PRICE_COMPARISON_OBSTRUCTION", evidenceIds: ["product:installment", "checkout:installment"] })]);
   expect(assessPriceComparison([{ ...product, textLines: [], priceLines: ["총 결제 금액 118,800원"] },
     { ...checkout, priceLines: ["총 결제 금액 118,800원"] },
-    { ...checkout, evidenceId: "cart:one", stage: "cart" as const, cartItemCount: 1 }])?.status).toBe("NOT_OBSERVED");
+    { ...checkout, evidenceId: "cart:one", stage: "cart" as const, cartItemCount: 1 }])?.status).toBeUndefined();
+  const inspectedProduct = { ...product, textLines: [], priceLines: ["총 결제 금액 118,800원"], inspection: { visibleText: "COMPLETE" as const, controls: "COMPLETE" as const, choiceControls: "COMPLETE" as const, prices: "COMPLETE" as const, feeRows: "COMPLETE" as const, cartCount: "NOT_APPLICABLE" as const } };
+  const inspectedCheckout = { ...checkout, priceLines: ["총 결제 금액 118,800원"], inspection: { ...inspectedProduct.inspection, cartCount: "NOT_APPLICABLE" as const } };
+  const verifiedCart = { ...checkout, evidenceId: "cart:verified", stage: "cart" as const, cartItemCount: 1, requestedQuantity: 1, cartContentsVerified: true };
+  expect(assessPriceComparison([inspectedProduct, verifiedCart, inspectedCheckout])?.status).toBe("NOT_OBSERVED");
   expect(assessPriceComparison([product])?.status).toBeUndefined();
 });
 
@@ -1385,6 +1683,24 @@ test("16개 유형별 상태는 증거가 없는 항목을 미발견이 아닌 �
   expect(coverage.DRIP_PRICING.status).toBe("NOT_TESTED");
   expect(coverage.MISDIRECTED_HIERARCHY.status).toBe("NOT_TESTED");
   expect(coverage.CANCELLATION_OBSTRUCTION.status).toBe("NOT_TESTED");
+});
+
+test("가격과 필수 비용을 끝까지 대조한 동일 상품은 순차공개 가격 미관찰로 기록한다", () => {
+  const inspection = { visibleText: "COMPLETE" as const, controls: "COMPLETE" as const,
+    choiceControls: "COMPLETE" as const, prices: "COMPLETE" as const, feeRows: "COMPLETE" as const,
+    cartCount: "OBSERVED" as const };
+  const product = { evidenceId: "price:product", stage: "product" as const, url: "https://shop.example.com/product/1",
+    screenshot: "product.png", priceLines: ["총 결제 금액 18,000원"], options: [], fees: [], inspection };
+  const cart = { evidenceId: "price:cart", stage: "cart" as const, url: "https://shop.example.com/cart",
+    screenshot: "cart.png", priceLines: ["총 결제 금액 18,000원"], options: [], fees: [], inspection,
+    cartContentsVerified: true, cartItemCount: 1, requestedQuantity: 1 };
+  const checkout = { evidenceId: "price:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: ["총 결제 금액 18,000원"], options: [], fees: [], inspection };
+  const { DRIP_PRICING } = buildRuleCoverage({ findings: [], snapshots: [product, cart, checkout] });
+  expect(DRIP_PRICING).toMatchObject({ status: "NOT_OBSERVED", evidenceIds: ["price:product", "price:cart", "price:checkout"] });
+
+  const changedTotal = buildRuleCoverage({ findings: [], snapshots: [product, cart, { ...checkout, priceLines: ["총 결제 금액 20,000원"] }] });
+  expect(changedTotal.DRIP_PRICING.status).toBe("NOT_TESTED");
 });
 
 test("상품 화면 없이 주문서만 수집하면 주문서를 상품으로 오인해 순차공개 가격을 판정하지 않는다", () => {
@@ -1436,17 +1752,18 @@ test("수락·거부 문구와 실제 크기는 유형을 추정하지 않고 �
   }
 });
 
-test("로그인 차단은 강제행동 확정이 아니라 근거가 있는 검토 신호로 남긴다", async () => {
+test("비회원 구매 중 로그인 차단은 강제행동 위험 신호로, 계정 사용 중 차단은 판정에 쓰지 않는다", async () => {
   const { detectForcedAction } = await import("../src/detectors/interaction-patterns");
   const snapshot = {
     evidenceId: "evidence:product", stage: "product" as const, url: "https://shop.example.com/product",
     screenshot: "product.png", priceLines: [], options: [], fees: [],
   };
   const blocker = { stage: "product" as const, code: "LOGIN_REQUIRED" as const, action: "ADD_TO_CART" as const, candidateCount: 0 };
-  expect(detectForcedAction(blocker, [snapshot])).toEqual([
-    expect.objectContaining({ type: "FORCED_ACTION", status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] }),
+  expect(detectForcedAction(blocker, [snapshot], "ANONYMOUS")).toEqual([
+    expect.objectContaining({ type: "FORCED_ACTION", status: "SUSPECTED", evidenceIds: ["evidence:product"] }),
   ]);
-  expect(detectForcedAction({ ...blocker, code: "ACTION_NOT_FOUND" }, [snapshot])).toEqual([]);
+  expect(detectForcedAction(blocker, [snapshot], "TEST_ACCOUNT")).toEqual([]);
+  expect(detectForcedAction({ ...blocker, code: "ACTION_NOT_FOUND" }, [snapshot], "ANONYMOUS")).toEqual([]);
 });
 
 test("강제행동은 비회원 주문서 도달 때만 미발견하고 테스트 계정 흐름은 미검사로 남긴다", () => {
@@ -1486,6 +1803,36 @@ test("보고서 판정 계약은 16개 유형에 담당 8대8과 유효 상태�
   expect(values.filter(({ decisionMode }) => decisionMode === "BASIC_ENGINE")).toHaveLength(8);
   expect(values.filter(({ decisionMode }) => decisionMode === "AI_CONTEXT")).toHaveLength(8);
   expect(values.every(({ status }) => ["SUSPECTED", "REVIEW_NEEDED", "NOT_OBSERVED", "NOT_TESTED"].includes(status))).toBe(true);
+});
+
+test("기본 엔진의 약한 신호는 미관찰로, 맥락 엔진 신호만 검토 필요로 분류한다", () => {
+  const evidence = {
+    evidenceId: "evidence:checkout", stage: "checkout" as const, url: "https://shop.example.com/checkout",
+    screenshot: "checkout.png", priceLines: [], options: [], fees: [],
+  };
+  const coverage = buildRuleCoverage({ findings: [
+    { type: "MISDIRECTED_HIERARCHY", status: "REVIEW_NEEDED", ruleVersion: "1", stage: "checkout", reason: "약한 크기 차이만 관찰", evidence: [evidence], evidenceIds: [evidence.evidenceId] },
+    { type: "FALSE_DISCOUNT", status: "REVIEW_NEEDED", ruleVersion: "1", stage: "product", reason: "판매 이력 확인 필요", evidence: [{ ...evidence, stage: "product" }], evidenceIds: ["evidence:product"] },
+  ], snapshots: [evidence] });
+  expect(coverage.MISDIRECTED_HIERARCHY).toMatchObject({ status: "NOT_OBSERVED", evidenceIds: ["evidence:checkout"] });
+  expect(coverage.FALSE_DISCOUNT).toMatchObject({ status: "REVIEW_NEEDED", evidenceIds: ["evidence:product"] });
+});
+
+test("상세 발견 목록은 16개 항목의 최종 판정과 일치한다", () => {
+  const coverage = buildRuleCoverage({ findings: [], snapshots: [] });
+  coverage.PRESELECTION = { ...coverage.PRESELECTION, status: "NOT_OBSERVED" };
+  coverage.URGENCY_SCARCITY = { ...coverage.URGENCY_SCARCITY, status: "SUSPECTED" };
+  coverage.HIDDEN_SUBSCRIPTION = { ...coverage.HIDDEN_SUBSCRIPTION, status: "REVIEW_NEEDED" };
+  const findings = [
+    { type: "PRESELECTION", status: "REVIEW_NEEDED", note: "낡은 검토 상태" },
+    { type: "URGENCY_SCARCITY", status: "REVIEW_NEEDED", note: "위험 신호" },
+    { type: "HIDDEN_SUBSCRIPTION", status: "SUSPECTED", note: "맥락 검토" },
+  ];
+
+  expect(findingsForRuleCoverage(findings, coverage)).toEqual([
+    { type: "URGENCY_SCARCITY", status: "SUSPECTED", note: "위험 신호" },
+    { type: "HIDDEN_SUBSCRIPTION", status: "REVIEW_NEEDED", note: "맥락 검토" },
+  ]);
 });
 
 test("표면 문구 신호는 해당 영역 증거와 연결하고 자동 미발견으로 뭉개지 않는다", async () => {

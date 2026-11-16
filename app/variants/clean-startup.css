@@ -1634,3 +1634,120 @@ body {
   text-align: center;
   font-weight: 500;
 }
+
+/* The current /login page uses auth-page/auth-card classes. Keep the auth view
+   self-contained here because this is the stylesheet imported by app/layout. */
+.auth-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+  background: #f6f8ff;
+}
+.auth-page .auth-card {
+  width: min(100%, 480px);
+  padding: 40px;
+  border: 1px solid #dce3f3;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(20, 35, 75, .08);
+}
+.auth-page .auth-card > .brand {
+  display: inline-flex;
+  max-width: 100%;
+  margin-bottom: 28px;
+}
+.auth-page .auth-card > .brand img {
+  display: block;
+  width: 142px;
+  max-width: 100%;
+  height: auto;
+}
+.auth-page .auth-card > .eyebrow {
+  display: block;
+  margin: 0 0 10px;
+  color: #5869d9;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .12em;
+}
+.auth-page .auth-card h1 {
+  margin: 0 0 10px;
+  color: #121a31;
+  font-size: 32px;
+}
+.auth-page .auth-card > p:not(.eyebrow) {
+  margin: 0;
+  color: #626c82;
+  line-height: 1.7;
+}
+.auth-page .auth-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 28px;
+}
+.auth-page .auth-form label {
+  display: grid;
+  gap: 7px;
+  color: #202a40;
+  font-size: 14px;
+  font-weight: 700;
+}
+.auth-page .auth-form input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid #d5dced;
+  border-radius: 10px;
+  background: #fff;
+  color: #141d32;
+  font: inherit;
+}
+.auth-page .auth-form input:focus {
+  outline: 3px solid rgba(83, 103, 255, .18);
+  border-color: #5367ff;
+}
+.auth-page .auth-form .action {
+  width: 100%;
+  min-height: 48px;
+  justify-content: center;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(110deg, #5367ff, #8954f6);
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.auth-page .auth-form .action:disabled,
+.auth-page .auth-form .auth-switch:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+.auth-page .auth-form .auth-switch {
+  min-height: 42px;
+  border: 1px solid #d5dced;
+  border-radius: 10px;
+  background: #fff;
+  color: #34415d;
+  font: inherit;
+  cursor: pointer;
+}
+.auth-page .auth-form .auth-message,
+.auth-page .auth-form .auth-note {
+  margin: 0;
+  line-height: 1.6;
+}
+.auth-page .auth-form .auth-message {
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: #f0f3ff;
+  color: #273b9e;
+}
+.auth-page .auth-form .auth-note {
+  color: #737c8e;
+  font-size: 12px;
+}
+@media (max-width: 520px) {
+  .auth-page .auth-card { padding: 28px 22px; }
+}

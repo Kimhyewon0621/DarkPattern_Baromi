@@ -1,5 +1,6 @@
 node_modules/
 .next/
+.next-playwright/
 backend-spring/.gradle/
 backend-spring/build/
 next-env.d.ts

@@ -11,6 +11,7 @@ import { evidenceDirectory } from "../../../../src/evidence-directory";
 import { scanTarget, demoOrigin } from "../../../../src/targets";
 import { compareScans } from "../../../../src/scan-comparison";
 import type { scanDemo } from "../../../../src/scan";
+import type { Finding } from "../../../../src/rules";
 import { fetchPublicHtml } from "../../../../src/public-html";
 import { createSiteVerification, hashToken, matchesVerification, verificationDnsPrefix, verificationFile, verificationName } from "../../../../src/site-verification";
 import { encryptCredentials } from "../../../../src/credential-vault";
@@ -18,7 +19,7 @@ import { deleteSpringScan, deleteSpringShop, listSpringShopScans, listSpringShop
 import { diagnosticSurfaceKinds, type DiagnosticSurfaceKind } from "../../../../src/diagnostic-surfaces";
 import { scanStaleBefore } from "../../../../src/scan-timeout";
 import { supabaseAuthEnabled, supabaseOwner } from "../../../../src/supabase-auth";
-import { buildRuleCoverage, summarizeRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
+import { buildRuleCoverage, findingsForRuleCoverage, summarizeRuleCoverage, type RuleCoverage } from "../../../../src/rule-coverage";
 import { buildAiCandidatePayload } from "../../../../src/ai-review-payload";
 import { closeCancelledScanPhases, initialScanPhases, parseScanPhases } from "../../../../src/scan-phases";
 
@@ -49,7 +50,15 @@ const springProgress = (scan: Record<string, unknown>, status: string) => {
   const phaseValues = Object.values(phaseResults);
   const terminalCount = phaseValues.filter(({ status: phaseStatus }) => ["COVERED", "DISCOVERED", "NOT_FOUND", "BLOCKED", "FAILED", "SKIPPED"].includes(phaseStatus ?? "")).length;
   const progress = phaseValues.length ? Math.round(terminalCount * 100 / phaseValues.length) : 0;
-  return { progress: active ? progress : 100, coverage, surfaceCoverage, phaseResults };
+  return {
+    progress: active ? progress : 100,
+    coverage,
+    surfaceCoverage,
+    phaseResults,
+    // Spring exposes this as `reportAvailable`; keep the public Node API
+    // contract consistent with the SQLite-backed `hasReport` field.
+    hasReport: Boolean(scan.reportAvailable ?? scan.hasReport),
+  };
 };
 const notFound = () => error("요청한 항목을 찾을 수 없습니다.", 404);
 const rateBuckets = new Map<string, number[]>();
@@ -147,7 +156,7 @@ async function normalizeSpringReport(raw: Record<string, unknown>, scanId: strin
     viewport: report.viewport ?? local?.viewport ?? raw.viewport,
     purchasePath,
     durationMs: report.durationMs ?? local?.durationMs ?? null,
-    phaseResults, coverage, surfaceCoverage, ruleCoverage, summary, findings,
+    phaseResults, coverage, surfaceCoverage, ruleCoverage, summary, findings: findingsForRuleCoverage(findings as Finding[], ruleCoverage),
     comparison,
     aiEligible: local?.shop?.plan === "PREMIUM",
     aiReviewCandidateCount,
@@ -165,7 +174,11 @@ export async function POST(request: NextRequest, context: Context) {
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > 64 * 1024) return error("요청 본문이 너무 큽니다.", 413);
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(demoOrigin()).origin) return error("동일 출처 요청이 필요합니다.", 403);
+  const allowedOrigins = new Set([
+    new URL(demoOrigin()).origin,
+    ...(process.env.BAROMI_WEB_ORIGINS ?? "").split(",").map((value) => value.trim()).filter(Boolean),
+  ]);
+  if (origin && !allowedOrigins.has(origin)) return error("동일 출처 요청이 필요합니다.", 403);
   const body = await request.json().catch(() => null);
   const jwtOwner = await supabaseOwner(request);
   const session = jwtOwner ?? request.cookies.get(cookie)?.value;
@@ -442,15 +455,18 @@ export async function GET(request: NextRequest, context: Context) {
     });
     return Response.json(await Promise.all(scans.map(async (scan) => {
       const report = await getReport(scan.reportPath);
-      const ruleCoverage = report?.ruleCoverage ?? ({} as RuleCoverage);
-      const notTested = Object.values(ruleCoverage).filter((item) => item.status === "NOT_TESTED").length;
+      const ruleCoverage = report
+        ? buildRuleCoverage({ ...report, reviewCandidates: [...(report.reviewCandidates ?? [])] })
+        : null;
+      const finalSummary = ruleCoverage ? summarizeRuleCoverage(ruleCoverage) : null;
+      const notTested = finalSummary?.notTested ?? 0;
       return {
       scanId: scan.id, status: scan.status, executionMode: scan.executionMode,
       viewport: scan.viewport, purchasePath: scan.purchasePath, createdAt: scan.createdAt,
       durationMs: scan.durationMs,
       summary: {
-        suspected: scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
-        reviewNeeded: scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
+        suspected: finalSummary?.suspected ?? scan.findings.filter((finding) => finding.status === "SUSPECTED").length,
+        reviewNeeded: finalSummary?.reviewNeeded ?? scan.findings.filter((finding) => finding.status === "REVIEW_NEEDED").length,
         notTested,
       },
       reportAvailable: Boolean(report),
@@ -475,7 +491,10 @@ export async function GET(request: NextRequest, context: Context) {
     const scan = await db().scan.findUniqueOrThrow({ where: { id: finding.scanId }, include: { findings: { orderBy: { id: "asc" } } } });
     const report = await getReport(scan.reportPath);
     const detail = report?.findings[scan.findings.findIndex((item) => item.id === finding.id)];
-    return detail ? Response.json({ id: finding.id, scanId: scan.id, ...detail }) : notFound();
+    if (!detail || !report) return notFound();
+    const ruleCoverage = buildRuleCoverage({ ...report, reviewCandidates: [...(report.reviewCandidates ?? [])] });
+    const [visibleDetail] = findingsForRuleCoverage([{ ...detail, type: finding.type, status: finding.status }], ruleCoverage);
+    return visibleDetail ? Response.json({ id: finding.id, scanId: scan.id, ...visibleDetail }) : notFound();
   }
   if (resource === "evidences" && !action) {
     const scanId = id.slice(0, 36);
@@ -498,7 +517,13 @@ export async function GET(request: NextRequest, context: Context) {
         : spring && typeof spring.reportJson === "string"
           ? JSON.parse(spring.reportJson) as { findings?: unknown[] }
           : null;
-      if (report?.findings) return Response.json(report.findings, { headers: { "Cache-Control": "private, no-store" } });
+    if (report?.findings) {
+      const ruleCoverage = buildRuleCoverage({
+        ...report as Parameters<typeof buildRuleCoverage>[0],
+        findings: report.findings as Finding[],
+      });
+      return Response.json(findingsForRuleCoverage(report.findings as Finding[], ruleCoverage), { headers: { "Cache-Control": "private, no-store" } });
+    }
     } catch (cause) { return error(cause instanceof Error ? cause.message : "Spring 상태 저장소에 연결할 수 없습니다.", 503); }
   }
   if (springAuthoritative() && (action === undefined || action === "report")) {
@@ -573,10 +598,17 @@ export async function GET(request: NextRequest, context: Context) {
       purchasePath: scan.purchasePath,
       status: scan.status, cancelRequested: scan.cancelRequested, currentStage: scan.currentStage,
       progress: active ? Math.round(Math.min(terminalPhases, progressStages) * 100 / progressStages) : 100, coverage, surfaceCoverage, phaseResults, ruleCoverage, summary,
-      hasReport: Boolean(scan.reportPath),
+      // The stored path can outlive its file (for example after manual cleanup).
+      // Only advertise the report when it was actually readable above.
+      hasReport: Boolean(storedReport),
     });
   }
-  if (action === "findings") return Response.json(scan.findings);
+  if (action === "findings") {
+    const report = storedReport as unknown as Parameters<typeof buildRuleCoverage>[0] | null;
+    if (!report) return Response.json(scan.findings);
+    const ruleCoverage = buildRuleCoverage({ ...report, findings: report.findings });
+    return Response.json(findingsForRuleCoverage(scan.findings, ruleCoverage));
+  }
   if (action === "report" && scan.reportPath) {
     const report = storedReport ?? await getReport(scan.reportPath);
     const baseline = scan.baselineScanId ? await db().scan.findFirst({
@@ -588,16 +620,24 @@ export async function GET(request: NextRequest, context: Context) {
       ? { baselineScanId: scan.baselineScanId, ...(before ? compareScans(before, report)
         : { status: "UNAVAILABLE" as const, reason: "기준 보고서를 읽을 수 없습니다." }) }
       : null;
+    const finalRuleCoverage = report
+      ? buildRuleCoverage({ ...report, reviewCandidates: [...(report.reviewCandidates ?? [])] })
+      : null;
+    const finalSummary = finalRuleCoverage ? summarizeRuleCoverage(finalRuleCoverage) : summary;
     const findings = report
       ? scan.findings.map((stored, index) => ({ ...(report.findings[index] ?? {}), id: stored.id, type: stored.type, status: stored.status, stage: stored.stage, reason: stored.reason, ruleVersion: stored.ruleVersion }))
       : scan.findings;
+    const visibleFindings = report && finalRuleCoverage
+      ? findingsForRuleCoverage(findings as { type: string; status: string }[], finalRuleCoverage)
+      : findings;
     const aiReview = serializeAiReview(scan.aiReview);
     const aiReviewCandidateCount = report ? buildAiCandidatePayload(report as Parameters<typeof buildAiCandidatePayload>[0]).length : 0;
     const response = Response.json({ ...report, viewport: scan.viewport, purchasePath: scan.purchasePath,
       durationMs: scan.durationMs,
-      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage, ruleCoverage, summary,
+      comparison, scanId: scan.id, shopId: scan.shopId, coverage, surfaceCoverage,
+      ruleCoverage: finalRuleCoverage, summary: finalSummary,
       aiEligible: scan.shop?.plan === "PREMIUM", aiReviewCandidateCount, aiReview,
-      findings });
+      findings: visibleFindings });
     if (request.nextUrl.searchParams.get("download") === "1") {
       response.headers.set("Content-Disposition", `attachment; filename="baromi-${scan.id}.json"`);
     }

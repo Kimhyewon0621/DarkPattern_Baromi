@@ -27,7 +27,7 @@ export type CheckResult = {
 
 /**
  * One result per check, always all 16 in the same order.
- * The server's `ruleCoverage` (spec §5) wins. Without it, a check is "발견 안 됨" only when
+ * The server's `ruleCoverage` (spec §5) wins. Without it, a check is "미관찰" only when
  * the screens it depends on were actually inspected; otherwise "미검사" with the reason.
  */
 export function checkResults(report: Report): CheckResult[] {
@@ -36,7 +36,11 @@ export function checkResults(report: Report): CheckResult[] {
     const server = report.ruleCoverage?.[rule.type];
     if (server) {
       const kind = ruleKind[server.status] ?? "none";
-      const related = findings.filter((finding) => (kind === "review") === (finding.status === "REVIEW_NEEDED"));
+      const related = kind === "risk"
+        ? findings.map((finding) => ({ ...finding, status: "SUSPECTED" as const }))
+        : kind === "review"
+          ? findings.map((finding) => ({ ...finding, status: "REVIEW_NEEDED" as const }))
+          : [];
       return { type: rule.type, name: rule.name, kind, note: server.reason ?? "", evidenceIds: server.evidenceIds ?? [], findings: related };
     }
 

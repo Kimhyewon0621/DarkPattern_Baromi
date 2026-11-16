@@ -8,8 +8,9 @@ import { Button, ButtonLink } from "@/components/ui/Button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { Icon } from "@/components/ui/Icon";
 import { useToast } from "@/components/ui/Toast";
-import { api, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage } from "@/lib/api";
 import { hostOf } from "@/lib/format";
+import { useBackToRegistration } from "@/lib/session";
 import type { ShopListResponse } from "@/lib/types";
 
 type ShopRow = ShopListResponse["shops"][number];
@@ -23,15 +24,20 @@ export function ShopList() {
   const [removing, setRemoving] = useState<ShopRow | null>(null);
   const [busy, setBusy] = useState(false);
   const [removeError, setRemoveError] = useState("");
+  const backToRegistration = useBackToRegistration();
 
   useEffect(() => {
     let alive = true;
     setError("");
     api.listShops()
       .then((result) => { if (alive) setShops(result.shops); })
-      .catch((cause) => { if (alive) setError(errorMessage(cause, "쇼핑몰 목록을 불러오지 못했어요.")); });
+      .catch((cause) => {
+        if (!alive) return;
+        if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+        else setError(errorMessage(cause, "쇼핑몰 목록을 불러오지 못했어요."));
+      });
     return () => { alive = false; };
-  }, [attempt]);
+  }, [attempt, backToRegistration]);
 
   async function remove() {
     if (!removing) return;
@@ -43,7 +49,8 @@ export function ShopList() {
       toast.show("쇼핑몰과 진단 이력을 삭제했어요");
       setRemoving(null);
     } catch (cause) {
-      setRemoveError(errorMessage(cause, "쇼핑몰을 삭제하지 못했어요."));
+      if (cause instanceof ApiError && cause.sessionLost) backToRegistration();
+      else setRemoveError(errorMessage(cause, "쇼핑몰을 삭제하지 못했어요."));
     } finally {
       setBusy(false);
     }
@@ -53,7 +60,7 @@ export function ShopList() {
     <>
       <PageHead
         title="내 쇼핑몰"
-        meta={<span>이 브라우저에서 등록한 쇼핑몰이에요. 쇼핑몰을 고르면 진단 이력을 볼 수 있어요.</span>}
+        meta={<span>계정에 등록한 쇼핑몰이에요. 쇼핑몰을 고르면 진단 이력을 볼 수 있어요.</span>}
         actions={<ButtonLink href="/scan/new" icon="plus">새 진단</ButtonLink>}
       />
       {error ? (

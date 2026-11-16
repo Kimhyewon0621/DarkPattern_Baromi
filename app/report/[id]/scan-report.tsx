@@ -44,7 +44,7 @@ type Report = {
   reviewCandidates?: { id: string; kind: string; stage: Stage | "surface"; ruleType?: keyof typeof legalRules; text: string; reason: string; evidenceIds: string[] }[];
   surfaceObservations?: { evidenceId: string; kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "COUPON" | "RECOMMENDATION" | "POLICY" | "CATALOG"; url: string; status: number | null; title: string; text: string; outcome: string }[];
   siteCrawl?: {
-    complete: boolean; pages: { evidenceId: string; url: string; discoveredFrom: string | null; depth: number; statePath: string[]; status: number | null; outcome: string; title: string; linksFound: number; controlsFound: string[]; failureReason?: string; elementCount: number; hiddenTextElementCount: number; interactiveCount: number; formsFound: { method: string; action: string }[]; interactives: { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string }[]; domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string }[] }[];
+    complete: boolean; pages: { evidenceId: string; url: string; discoveredFrom: string | null; depth: number; statePath: string[]; status: number | null; outcome: string; title: string; linksFound: number; controlsFound: string[]; failureReason?: string; elementCount: number; hiddenTextElementCount: number; interactiveCount: number; interactiveInventoryComplete?: boolean; formsFound: { method: string; action: string }[]; interactives: { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string }[]; domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: { x: number; y: number; width: number; height: number }; href?: string }[] }[];
     skippedLinks: { url: string; discoveredFrom: string; reason: string }[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; pendingUrls: string[];
     skippedControls: { url: string; label: string; reason: string }[];
     discoveredUrlCount: number; visitedUrlCount: number; discoveredStateCount: number; visitedStateCount: number;
@@ -102,7 +102,7 @@ export function ScanReport({ id }: { id: string }) {
       <dl className="summary">
         <div><dt>위험 의심</dt><dd>{report.summary.suspected}</dd></div>
         <div><dt>확인 필요</dt><dd>{report.summary.reviewNeeded}</dd></div>
-        <div><dt>검사 범위에서 미발견</dt><dd>{report.summary.notObserved}</dd></div>
+        <div><dt>미관찰</dt><dd>{report.summary.notObserved}</dd></div>
         <div><dt>미검사</dt><dd>{report.summary.notTested}</dd></div>
       </dl>
       <h2>검사 범위</h2>
@@ -145,8 +145,8 @@ export function ScanReport({ id }: { id: string }) {
       </section> : null}
       <section aria-label="16개 유형별 검사 결과">
         <h2>16개 유형별 검사 결과</h2>
-        <p>증거가 부족한 유형은 정상으로 간주하지 않고 미검사 사유를 표시합니다.</p>
-        <ul>{Object.entries(legalRules).map(([key, rule]) => { const result = report.ruleCoverage?.[key as keyof typeof legalRules]; return <li key={key}><strong>{rule.title}</strong> · {result?.decisionMode === "BASIC_ENGINE" ? "기본 엔진" : result?.decisionMode === "AI_CONTEXT" ? "AI 맥락 검토" : "판정 담당 미기록"} · {!result ? "상태 미기록" : result.status === "SUSPECTED" ? "위험 신호" : result.status === "REVIEW_NEEDED" ? "검토 필요" : result.status === "NOT_OBSERVED" ? "검사 범위에서 미발견" : "미검사"}{result?.reason ? ` · ${result.reason}` : ""}{result?.evidenceIds.length ? ` · 증거 ${result.evidenceIds.join(", ")}` : " · 연결된 증거 없음"}</li>; })}</ul>
+        <p>각 항목에는 바로미의 판정 기준과 적용 결과를 표시합니다. 완료된 크롤링에서 해당 기준의 신호가 없으면 미관찰로 기록합니다.</p>
+        <ul>{Object.entries(legalRules).map(([key, rule]) => { const result = report.ruleCoverage?.[key as keyof typeof legalRules]; return <li key={key}><strong>{rule.title}</strong> · {result?.decisionMode === "BASIC_ENGINE" ? "기본 엔진" : result?.decisionMode === "AI_CONTEXT" ? "AI 맥락 검토" : "판정 담당 미기록"} · {!result ? "상태 미기록" : result.status === "SUSPECTED" ? "위험 신호" : result.status === "REVIEW_NEEDED" ? "검토 필요" : result.status === "NOT_OBSERVED" ? "미관찰" : "미검사"}{result?.decisionCriteria ? ` · 기준: ${result.decisionCriteria}` : ""}{result?.reason ? ` · 판정: ${result.reason}` : ""}{result?.evidenceIds.length ? ` · 증거 ${result.evidenceIds.join(", ")}` : " · 연결된 증거 없음"}</li>; })}</ul>
       </section>
       <h2>발견된 항목</h2>
       {report.findings.length ? <ul>{report.findings.map((finding) => (

@@ -39,22 +39,52 @@ export type PhaseResults = Partial<Record<PhaseId, PhaseResult>>;
 
 /** Spec §4/§5: one verdict per check type; a finished report always carries all 16. */
 export type RuleStatus = "SUSPECTED" | "REVIEW_NEEDED" | "NOT_OBSERVED" | "NOT_TESTED";
-export type RuleCoverageItem = { status: RuleStatus; reason: string; evidenceIds?: string[] };
+export type DecisionMode = "BASIC_ENGINE" | "AI_CONTEXT";
+/** decisionMode is absent only in legacy/demo fixtures; live report responses include it. */
+export type RuleCoverageItem = { status: RuleStatus; decisionMode?: DecisionMode; decisionCriteria?: string; reason: string; evidenceIds: string[] };
 export type RuleCoverage = Partial<Record<FindingType, RuleCoverageItem>>;
 
-/** Spec §13.4: an observation record per stage, not the true paid price. */
+export type Bounds = { x: number; y: number; width: number; height: number };
+export type EvidenceLocation = { frame: string; visible: boolean; source: "dom" | "api" };
+export type OptionEvidence = { label: string; won: number; selected: boolean; bounds: Bounds; location?: EvidenceLocation };
+export type FeeEvidence = { id: string; label: string; won: number; required: boolean; bounds: Bounds; location?: EvidenceLocation };
+export type ChoiceControl = { label: string; selected: boolean; amount?: number; kind: "CHECKBOX" | "RADIO" | "SELECT" | "SWITCH" };
+export type DecisionControl = {
+  label: string; kind: "BUTTON" | "LINK" | "CHECKBOX" | "RADIO"; bounds: Bounds;
+  selected?: boolean; href?: string; color?: string; backgroundColor?: string; opacity?: number; tabIndex?: number; group?: string;
+};
+export type SnapshotInspection = {
+  visibleText: "COMPLETE"; controls: "COMPLETE"; choiceControls: "COMPLETE" | "INCOMPLETE";
+  prices: "COMPLETE"; feeRows: "COMPLETE"; cartCount: "OBSERVED" | "UNAVAILABLE" | "NOT_APPLICABLE";
+};
+export type Snapshot = {
+  evidenceId?: string; stage: Stage; url: string; screenshot?: string; capturedAt?: string; screenshotArea?: Bounds;
+  priceLines: string[]; textLines?: string[]; options?: OptionEvidence[]; choiceControls?: ChoiceControl[]; fees?: FeeEvidence[];
+  precheckedSignals?: { label: string; bounds: Bounds; location?: EvidenceLocation }[];
+  surfaceSignals?: { kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "MARKETING_CONSENT" | "POPUP"; label: string; source: "link" | "button" | "text"; href?: string }[];
+  decisionControls?: DecisionControl[]; cartItemCount?: number; productIdentity?: string; cartCountBeforeAdd?: number; cartBaselineVerified?: boolean;
+  requestedQuantity?: number; cartLineIdentities?: string[]; cartLinesComplete?: boolean; requestedProductIdentity?: string;
+  cartContentsVerified?: boolean; inspection?: SnapshotInspection;
+};
+
+/** Screen/network observations per stage; this is not an authoritative paid-price receipt. */
 export type PriceVerification = "SCREEN_ONLY" | "SCREEN_NETWORK_AGREE" | "SCREEN_NETWORK_PARTIAL" | "SCREEN_NETWORK_DISAGREE";
 export type PriceLedgerStage = {
   stage: Stage;
-  evidence?: { id: string; url?: string; capturedAt?: string };
+  evidence?: { id: string; url?: string; capturedAt?: string; screenshot?: string };
   verification: PriceVerification;
   displayedLines: string[];
   networkValues?: { evidenceId: string; won: number; matchedScreen: boolean }[];
+  options?: OptionEvidence[];
+  fees?: FeeEvidence[];
 };
 export type PriceLedger = {
   version: number;
   currency: "KRW";
-  firstPriceExposure?: { status: "OBSERVED" | "NOT_VERIFIED"; url?: string; text?: string; amounts?: number[] };
+  firstPriceExposure?: {
+    status: "OBSERVED" | "NOT_VERIFIED"; evidenceId?: string; url?: string; productUrl?: string; text?: string;
+    amounts?: number[]; feeMentions?: { key: string; won: number }[]; screenshot?: string; capturedAt?: string;
+  };
   stages: PriceLedgerStage[];
 };
 
@@ -93,7 +123,12 @@ export type Finding = {
   ruleVersion?: string;
   evidenceIds?: string[];
 };
-export type ReviewCandidate = { id: string; kind: string; stage: Stage | "surface"; text: string; reason: string; evidenceIds: string[] };
+export type ReviewCandidate = {
+  id: string;
+  kind: "FEE_SEMANTICS" | "OPTION_SEMANTICS" | "SURFACE_FLOW" | "EXPLORATION_UNVERIFIED" | "VISUAL_ACCESSIBILITY" | "SEMANTIC_REVIEW" | "POPUP_TEXT" | "SURFACE_TEXT";
+  stage: Stage | "surface"; text: string; reason: string; evidenceIds: string[]; ruleType?: FindingType;
+  observedFacts?: string[]; missingInformation?: string[];
+};
 export type SurfaceObservation = {
   evidenceId: string;
   kind: "AUTH" | "SUBSCRIPTION" | "CANCELLATION" | "COUPON" | "RECOMMENDATION" | "POLICY" | "CATALOG";
@@ -137,8 +172,9 @@ export type Report = {
   executionMode: ExecutionMode;
   viewport: Viewport;
   purchasePath: PurchasePath;
+  authContext?: "ANONYMOUS" | "TEST_ACCOUNT" | "UNKNOWN";
   durationMs: number | null;
-  stageTimingsMs?: Partial<Record<Stage, number>>;
+  stageTimingsMs?: Partial<Record<Stage | "site-crawl", number>>;
   collectionFailure?: string;
   collectionFailureCode?: CollectionFailureCode;
   coverage: Record<Stage, StageCoverage>;
@@ -146,6 +182,14 @@ export type Report = {
   phaseResults?: PhaseResults;
   ruleCoverage?: RuleCoverage | null;
   priceLedger?: PriceLedger | null;
+  snapshots?: Snapshot[];
+  interactions?: InteractionEvidence[];
+  siteCrawl?: SiteCrawlResult | null;
+  surfaceDestinations?: SurfaceDestination[];
+  explorationMetrics?: ExplorationMetrics;
+  networkPriceEvidence?: NetworkPriceEvidence[];
+  reviewClassifications?: ReviewClassification[];
+  aiReviewCandidateCount?: number;
   summary: Summary;
   comparison?: Comparison | null;
   explorationBlocker?: ExplorationBlocker | null;
@@ -157,12 +201,11 @@ export type Report = {
   aiUsage?: { calls: number; inputTokens: number; outputTokens: number; estimatedCostUsd: number };
 };
 
-export type Bounds = { x: number; y: number; width: number; height: number };
-export type Snapshot = { evidenceId?: string; stage: Stage; url: string; screenshotArea?: Bounds; priceLines: string[] };
 export type FindingDetail = {
   id: number;
   scanId: string;
   type: FindingType;
+  status?: FindingStatus;
   stage: Stage;
   reason: string;
   ruleVersion?: string;
@@ -180,5 +223,45 @@ export type HistoryItem = {
   createdAt: string;
   durationMs: number | null;
   summary: { suspected: number; reviewNeeded: number };
+};
+export type InteractionEvidence = {
+  id: string; stage: Stage; kind: "INITIAL_STATE" | "PAID_OPTION_TOGGLE" | "REQUIRED_OPTION_SELECTION" | "NAVIGATION";
+  capturedAt: string; controlLabel?: string; beforeSelected?: boolean; afterSelected?: boolean;
+  beforeTotalWon?: number | null; afterTotalWon?: number | null; amountDeltaWon?: number | null;
+  outcome: "OBSERVED" | "NO_LIVE_CHANGE" | "NOT_APPLICABLE"; revealedText?: string[];
+};
+export type NetworkPriceEvidence = {
+  id: string; stage: Stage; url: string; capturedAt: string; values: { path: string; won: number }[];
+};
+export type SurfaceDestination = { kind: SurfaceKind; text: string; href: string; source: "LINK" | "BUTTON" };
+export type SiteCrawlPage = {
+  evidenceId: string; url: string; discoveredFrom: string | null; depth: number; statePath: string[];
+  status: number | null; outcome: "OBSERVED" | "FETCH_FAILED"; title: string; text: string; linksFound: number;
+  controlsFound: string[]; productCardsFound: string[];
+  domText: { tag: string; text: string; visible: boolean; fontSize: string; color: string; opacity: string; bounds: Bounds; href?: string }[];
+  interactives: { tag: string; label: string; role: string; type: string; visible: boolean; disabled: boolean; selected?: boolean; href?: string }[];
+  formsFound: { method: string; action: string }[]; elementCount: number; hiddenTextElementCount: number;
+  outgoingLinks: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number;
+  interactiveInventoryComplete?: boolean;
+  capturedAt: string; durationMs?: number; failureReason?: string;
+};
+export type SiteCrawlResult = {
+  complete: boolean; pages: SiteCrawlPage[]; skippedLinks: { url: string; discoveredFrom: string; reason: string }[];
+  unexploredControls: { url: string; label: string; reason: string; statePath?: string[] }[];
+  nonNavigatingControls: { url: string; label: string; reason: string }[];
+  skippedControls: { url: string; label: string; reason: string }[]; pendingUrls: string[];
+  discoveredUrlCount: number; visitedUrlCount: number; discoveredStateCount: number; visitedStateCount: number;
+  uniqueDiscoveredUrlCount: number; uniqueVisitedUrlCount: number; productCardCount: number; failedUrlCount: number;
+  maxDepth: number; durationMs: number; duplicateStates: { url: string; statePath: string[]; duplicateOf: string }[];
+  loginReplayed: boolean; stopReason?: string;
+};
+export type ExplorationMetrics = {
+  productLinksFound: number; productLinksConsidered: number; productLinksUnselected: number; productLinksVisited: number;
+  surfaceCandidates: number; surfaceCandidatesInspected: number; surfaceCandidatesUninspected: number;
+  purchaseActions: number; priceResponses: number;
+};
+export type ReviewClassification = {
+  candidateId: string; label: "FEE" | "PAID_OPTION" | "FLOW" | "UNRESOLVED";
+  confidence: number; method: "candidate_kind_mapping" | "unresolved";
 };
 export type Shop = { id: string; url: string; consentAt?: string | null; verifiedAt?: string | null };

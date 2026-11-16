@@ -13,6 +13,12 @@ export type ScanPhase = {
 };
 export type ScanPhaseResults = Partial<Record<ScanPhaseId, ScanPhase>>;
 
+export function nextPurchaseStage(stage: Stage, purchasePath: "CART" | "DIRECT"): Stage | undefined {
+  if (stage === "product") return purchasePath === "DIRECT" ? "checkout" : "cart";
+  if (stage === "cart") return "checkout";
+  return undefined;
+}
+
 export function initialScanPhases(purchasePath: "CART" | "DIRECT", dynamic: boolean): ScanPhaseResults {
   const results: ScanPhaseResults = {};
   for (const stage of stages) {
@@ -80,6 +86,29 @@ export function closeCancelledScanPhases(phases: ScanPhaseResults, reason = "사
   for (const [id, phase] of Object.entries(phases) as [ScanPhaseId, ScanPhase][]) {
     if (phase.status === "RUNNING") result = updateScanPhase(result, id, { status: "FAILED", reason });
     else if (phase.status === "PENDING") result = updateScanPhase(result, id, { status: "SKIPPED", reason: "진단 중단으로 실행하지 않았습니다." });
+  }
+  return result;
+}
+
+/** Close a crashed/failed run without claiming that every unstarted phase failed. */
+export function closeFailedScanPhases(phases: ScanPhaseResults, reason: string): ScanPhaseResults {
+  let result = phases;
+  const entries = Object.entries(phases) as [ScanPhaseId, ScanPhase][];
+  const running = new Set(entries.filter(([, phase]) => phase.status === "RUNNING").map(([id]) => id));
+  const firstPending = entries.find(([, phase]) => phase.status === "PENDING")?.[0];
+  let failureAssigned = running.size > 0;
+
+  for (const [id, phase] of entries) {
+    if (running.has(id)) {
+      result = updateScanPhase(result, id, { status: "FAILED", reason });
+    } else if (phase.status === "PENDING") {
+      if (!failureAssigned && id === firstPending) {
+        result = updateScanPhase(result, id, { status: "FAILED", reason });
+        failureAssigned = true;
+      } else {
+        result = updateScanPhase(result, id, { status: "SKIPPED", reason: "앞 단계 실패로 실행하지 않았습니다." });
+      }
+    }
   }
   return result;
 }

@@ -39,9 +39,14 @@ export type Snapshot = {
   capturedAt?: string;
   screenshotArea?: Bounds;
   priceLines: string[];
+  /** Single visible payable amount after excluding crossed-out and fee text. */
+  payableAmount?: number;
+  payableCandidates?: number[];
   /** Normalized visible text retained for text-only risk signals. */
   textLines?: string[];
   options: Option[];
+  /** Visible selection controls and their initial state, including empty results. */
+  choiceControls?: { label: string; selected: boolean; amount?: number; kind: "CHECKBOX" | "RADIO" | "SELECT" | "SWITCH" }[];
   fees: Fee[];
   precheckedSignals?: { label: string; bounds: Bounds; location?: EvidenceLocation }[];
   surfaceSignals?: SurfaceSignal[];
@@ -49,6 +54,29 @@ export type Snapshot = {
   decisionControls?: DecisionControl[];
   /** Item count shown after exactly one add action in the isolated scan cart. */
   cartItemCount?: number;
+  /** Stable identity extracted from product metadata or its canonical route. */
+  productIdentity?: string;
+  /** Visible cart item count before the scanner's add action, when available. */
+  cartCountBeforeAdd?: number;
+  /** True only when the pre-add cart count or empty state was explicitly observed. */
+  cartBaselineVerified?: boolean;
+  /** Selected quantity at the moment the scanner adds the product. */
+  requestedQuantity?: number;
+  /** Confirmed cart-line identities, when the storefront exposes them. */
+  cartLineIdentities?: string[];
+  cartLinesComplete?: boolean;
+  requestedProductIdentity?: string;
+  /** True only when before/after cart lines are compared by stable product identity. */
+  cartContentsVerified?: boolean;
+  /** Records which visible evidence extractors completed, including empty results. */
+  inspection?: {
+    visibleText: "COMPLETE";
+    controls: "COMPLETE";
+    choiceControls: "COMPLETE" | "INCOMPLETE";
+    prices: "COMPLETE";
+    feeRows: "COMPLETE";
+    cartCount: "OBSERVED" | "UNAVAILABLE" | "NOT_APPLICABLE";
+  };
 };
 export type InteractionEvidence = {
   id: string;

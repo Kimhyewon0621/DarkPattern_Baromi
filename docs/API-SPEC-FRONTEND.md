@@ -12,7 +12,8 @@
 - 오류 형식: `{ "error": "사용자에게 표시할 메시지" }`
 - 주요 상태: `QUEUED`, `RUNNING`, `COMPLETED`, `PARTIAL`, `CANCELLED`, `FAILED`
 - 화면 단계: `product`, `cart`, `checkout`
-- 표면 상태: `COVERED`, `DISCOVERED`, `PENDING`, `BLOCKED`, `NOT_FOUND`, `SKIPPED`
+- 모든 구매 단계·별도 표면·전체 크롤링의 `phaseResults.status`: `PENDING`, `RUNNING`, `COVERED`, `DISCOVERED`, `NOT_FOUND`, `BLOCKED`, `FAILED`, `SKIPPED`
+- 화면 단계의 요약 `coverage`는 `COVERED|BLOCKED|PENDING|SKIPPED`이며, 원인과 완료 여부는 `phaseResults`를 기준으로 표시한다.
 
 ## 1. 서버 상태
 
@@ -117,6 +118,7 @@
   "viewport": "DESKTOP|MOBILE",
   "purchasePath": "CART|DIRECT",
   "status": "QUEUED|RUNNING|COMPLETED|PARTIAL|CANCELLED|FAILED",
+  "hasReport": true,
   "currentStage": "product|cart|checkout|surface:<영역>|site-crawl|null",
   "progress": 67,
   "phaseResults": { "product": { "status": "COVERED", "startedAt": "ISO-8601", "finishedAt": "ISO-8601", "durationMs": 1200, "reason": null, "evidenceIds": ["evidence-id"] } },
@@ -126,7 +128,9 @@
 }
 ```
 
-`phaseResults`에는 구매 단계, 별도 탐색 영역, 전체 크롤링 단계의 실제 상태·시간·근거 ID·미완료 사유가 포함된다. 프론트는 이 값을 기준으로 실행 중과 미검사를 구분한다.
+`hasReport`는 종료 상태와 별개로 실제 보고서 조회가 가능한지 나타낸다. 실패 종료라도 수집된 증거와 16개 유형별 미검사 사유를 담은 보고서가 저장되면 `true`이며, 이 경우 진행 화면은 실패 원인과 함께 보고서 열기 동작을 제공한다. Spring의 `reportAvailable`도 공개 응답에서는 `hasReport`로 정규화한다.
+
+`phaseResults`에는 구매 단계, 별도 탐색 영역, 전체 크롤링 단계의 실제 상태·시간·근거 ID·미완료 사유가 포함된다. 단계 도중 예외가 발생하면 실패한 단계는 `FAILED`, 뒤에 남은 단계는 `SKIPPED`로 끝난다. 실행을 시작하기 전에 실패한 작업도 구매 단계 실패와 나머지 단계 건너뜀으로 저장한다. 프론트는 이 값을 기준으로 실행 중과 미검사를 구분한다.
 
 프론트는 `QUEUED`/`RUNNING` 동안 1~2초 간격으로 조회하고, `COMPLETED`/`PARTIAL`/`CANCELLED`/`FAILED`에서 중지한다.
 
@@ -151,9 +155,9 @@
 | --- | --- |
 | `scanId`, `shopId`, `scanStatus`, `executionMode`, `viewport`, `purchasePath`, `authContext`, `durationMs` | 진단 식별자와 실행 요약. 인증 맥락은 `ANONYMOUS|TEST_ACCOUNT|UNKNOWN` |
 | `findings[]` | 기본 엔진이 확인한 위험 신호 또는 검토 후보. 각 항목은 `id`, `type`, `status`, `stage`, `reason`, `ruleVersion`, `evidenceIds`를 포함 |
-| `ruleCoverage[유형]` | 16개 유형 각각의 상태, 판정 담당, 이유, 근거 ID |
+| `ruleCoverage[유형]` | 16개 유형 각각의 상태, 판정 담당, `decisionCriteria`, 이유, 근거 ID |
 | `summary` | `ruleCoverage`의 상태별 집계. 네 값의 합은 16 |
-| `snapshots[]`, `siteCrawl`, `surfaceObservations[]`, `interactions[]`, `priceLedger` | 화면·페이지·표면·상호작용·가격 관찰 근거 |
+| `snapshots[]`, `siteCrawl`, `surfaceObservations[]`, `interactions[]`, `priceLedger` | 화면·페이지·표면·상호작용·가격 관찰 근거. 구매 스냅샷에는 선택지 상태와 가격/수수료 추출 완료 여부, 식별 가능한 장바구니 행, 담기 전 장바구니 수량 및 기준 상태 검증 여부가 포함될 수 있음 |
 | `phaseResults`, `coverage`, `surfaceCoverage`, `explorationMetrics`, `stageTimingsMs` | 실제 탐색 범위와 단계별 상태·시간 |
 | `reviewCandidates[]` | 사람 또는 AI 맥락 검토용 후보. `ruleType`이 없는 메모는 특정 유형 판정이 아니다 |
 | `aiEligible`, `aiReviewCandidateCount`, `aiReview` | 유료 AI 검토 가능 여부, 전달 후보 수, 별도 요청 작업의 진행/결과/비용 |
@@ -185,12 +189,12 @@
   "explorationMetrics": { "productLinksFound": 0, "productLinksConsidered": 0, "productLinksUnselected": 0, "productLinksVisited": 0, "surfaceCandidates": 0, "surfaceCandidatesInspected": 0, "surfaceCandidatesUninspected": 0, "purchaseActions": 2, "priceResponses": 0 },
   "interactions": [],
   "priceLedger": { "version": 1, "currency": "KRW", "firstPriceExposure": { "status": "NOT_VERIFIED" }, "stages": [] },
-  "ruleCoverage": { "PRESELECTION": { "status": "NOT_TESTED", "decisionMode": "BASIC_ENGINE", "reason": "...", "evidenceIds": [] } },
+  "ruleCoverage": { "PRESELECTION": { "status": "SUSPECTED", "decisionMode": "BASIC_ENGINE", "decisionCriteria": "사용자 조작 전에 비필수 유료 옵션 또는 마케팅 동의가 선택된 상태면 위험 신호.", "reason": "유료 선택지가 조작 전부터 선택되어 있고 금액이 합계에 반영되었습니다.", "evidenceIds": ["evidence:checkout"] } },
   "reviewCandidates": [{ "id": "review-id", "kind": "SEMANTIC_REVIEW", "stage": "surface", "ruleType": "URGENCY_SCARCITY", "text": "긴급성 표현의 실제 근거를 검토", "observedFacts": ["남은 시간 04:45"], "missingInformation": ["실제 재고 기록과 타이머 종료 후 조건 변화"], "reason": "의미 검토 필요", "evidenceIds": ["evidence-id"] }],
   "reviewClassifications": [],
   "networkPriceEvidence": [],
   "surfaceCoverage": { "AUTH": "NOT_FOUND", "SUBSCRIPTION": "NOT_FOUND", "CANCELLATION": "NOT_FOUND", "COUPON": "NOT_FOUND", "RECOMMENDATION": "NOT_FOUND", "POLICY": "NOT_FOUND", "CATALOG": "COVERED" },
-  "summary": { "suspected": 1, "reviewNeeded": 1, "notObserved": 1, "notTested": 13 },
+  "summary": { "suspected": 1, "reviewNeeded": 1, "notObserved": 0, "notTested": 14 },
   "comparison": null,
   "aiEligible": false,
   "aiReviewCandidateCount": 0,
@@ -202,9 +206,11 @@
 
 예시는 구조를 설명하기 위한 값이며, 실제 진단의 상태·수치·배열 내용은 서버가 반환한 값을 사용한다. 스크린샷 주소는 보고서 파일명이므로 화면에서는 증거 조회 API를 이용해 이미지를 불러온다.
 
-`ruleCoverage`는 16개 유형을 각각 `SUSPECTED|REVIEW_NEEDED|NOT_OBSERVED|NOT_TESTED`와 판정 담당 `decisionMode: BASIC_ENGINE|AI_CONTEXT`로 반환한다. `NOT_OBSERVED`는 해당 유형의 검사 근거를 실제 확보한 경우에만 사용한다. 구조화된 선택 상태·금액처럼 규칙으로 확인된 사실은 `findings`에 별도로 반환하고, 맥락형 후보는 근거 증거 ID를 가진 유형 지정 `reviewCandidates`에 별도로 기록한다. 보고서의 `summary` 네 숫자는 `ruleCoverage`의 최종 상태 수를 각각 세며 합계는 항상 16이다. 발견 항목 수와 규칙별 상태 수는 서로 다른 값이다.
+`ruleCoverage`는 16개 유형을 각각 `SUSPECTED|REVIEW_NEEDED|NOT_OBSERVED|NOT_TESTED`와 판정 담당 `decisionMode: BASIC_ENGINE|AI_CONTEXT`로 반환한다. 각 항목은 `decisionCriteria`, `reason`, `evidenceIds`를 포함한다. `decisionCriteria`는 바로미가 적용한 유형별 판정 기준이다. 완료된 크롤링에서 해당 기준의 신호가 없으면 `NOT_OBSERVED`로 기록한다. 크롤링 자체가 완료되지 않아 진단 결과를 만들 수 없는 경우에만 `NOT_TESTED`로 남긴다. 구조화된 선택 상태·금액처럼 규칙으로 확인된 사실은 `findings`에 별도로 반환하고, 맥락형 신호는 근거 증거 ID를 가진 유형 지정 `reviewCandidates` 및 `REVIEW_NEEDED`로 기록한다. 보고서의 `summary` 네 숫자는 `ruleCoverage`의 최종 상태 수를 각각 세며 합계는 항상 16이다. 발견 항목 수와 규칙별 상태 수는 서로 다른 값이다.
 
-`AI_CONTEXT` 유형은 관련 근거가 있고 해당 유형의 후보가 생성된 경우에만 `REVIEW_NEEDED`가 된다. 화면은 있지만 후보 생성에 실패한 경우에는 이유와 증거 ID를 붙여 `NOT_TESTED`로 남긴다. `reviewCandidates`에는 사람 확인용의 유형 없는 메모도 있을 수 있지만, 유료 AI provider에는 합의된 `AI_CONTEXT` 8개 중 `ruleType`이 고정되고 실제 증거가 연결된 항목만 전달한다. `BASIC_ENGINE` 후보나 유형 없는 메모는 AI 요청 payload에서 제외한다.
+기본 엔진의 선택·가격·장바구니 판정은 관련 스냅샷의 `inspection` 추출 완료 표식과 `cartContentsVerified` 같은 비교 근거를 함께 사용한다. 화면이 존재한다는 사실만으로 음성 판정을 내리지 않는다. 장바구니 스냅샷의 `cartBaselineVerified`는 담기 전 장바구니 수량 또는 명시적인 빈 장바구니 상태를 실제 화면에서 읽었는지 나타낸다. `cartContentsVerified`가 없거나 `false`면 장바구니 품목 수만으로 `SNEAKY_CART_ADD`를 미관찰로 확정하지 않는다. `siteCrawl`은 방문 페이지별 DOM 텍스트·가시성·컨트롤·링크 및 실패/미방문 사유를 반환한다. 페이지의 `interactiveInventoryComplete`는 DOM 상호작용 목록을 빠짐없이 추출했는지 나타내며, 클릭 가능한 동작 수인 `interactiveCount`와는 다른 값이다. 이는 수집 범위를 설명하는 근거이며, 크롤러가 방문한 것만으로 각 가이드라인을 검사했다고 간주하지 않는다.
+
+`AI_CONTEXT` 유형은 유형별 기준을 만족하는 맥락 신호가 관찰된 경우 `REVIEW_NEEDED`가 된다. 완료된 크롤링에서 그런 신호가 없으면 `NOT_OBSERVED`다. `reviewCandidates`에는 사람 확인용의 유형 없는 메모도 있을 수 있지만, 유료 AI provider에는 합의된 `AI_CONTEXT` 8개 중 `ruleType`이 고정되고 실제 증거가 연결된 항목만 전달한다. `BASIC_ENGINE` 후보나 유형 없는 메모는 AI 요청 payload에서 제외한다.
 
 유형이 지정된 `reviewCandidates[]`에는 `observedFacts[]`와 `missingInformation[]`이 포함된다. AI에 전달하는 자료는 후보와 직접 관련된 화면 문구·상호작용 근거를 우선하며, 로그인 정보와 연락처는 가린다. `interactions[]`의 ID는 선택 전후 상태와 거부 직후 나타난 문구의 근거가 될 수 있다. `priceLedger.firstPriceExposure.evidenceId`는 목록에서 처음 본 가격·상품 카드 근거를 가리키며 관찰된 경우 `price:first-exposure`다. 판정 상태는 AI 결과와 별도로 유지된다.
 

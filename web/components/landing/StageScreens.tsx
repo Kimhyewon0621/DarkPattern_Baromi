@@ -44,7 +44,7 @@ export const stageScreens: { key: string; label: string; node: ReactNode }[] = [
           </div>
         </div>
       </Browser>
-      <Note badge={<Badge kind="risk">위험 의심</Badge>}>파손 보장 +1,500원이 손님이 고르기 전부터 체크돼 있어요. 해제하면 총액이 1,500원 줄어요.</Note>
+      <Note badge={<Badge kind="risk">위험 신호</Badge>}>파손 보장 +1,500원이 손님이 고르기 전부터 체크돼 있어요. 해제하면 총액이 1,500원 줄어요.</Note>
     </>,
   },
   {
@@ -93,7 +93,7 @@ export const stageScreens: { key: string; label: string; node: ReactNode }[] = [
           </div>
         </div>
       </Browser>
-      <Note badge={<Badge kind="risk">위험 의심</Badge>}>앞 단계에 없던 필수 처리비 2,500원이 주문서에서 새로 붙었어요. 결제 버튼은 누르지 않았어요.</Note>
+      <Note badge={<Badge kind="risk">위험 신호</Badge>}>앞 단계에 없던 필수 처리비 2,500원이 주문서에서 새로 붙었어요. 결제 버튼은 누르지 않았어요.</Note>
     </>,
   },
   {
@@ -102,9 +102,9 @@ export const stageScreens: { key: string; label: string; node: ReactNode }[] = [
     node: <>
       <Browser url="baromi.app/report">
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <b style={{ fontSize: 20, lineHeight: 1.3 }}>위험 의심 3건, 확인 필요 2건이 있어요</b>
+          <b style={{ fontSize: 20, lineHeight: 1.3 }}>위험 신호 3건, 검토 필요 2건이 있어요</b>
           <div className="tnum" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, padding: "14px 0", borderTop: "1px solid var(--line)", borderBottom: "1px solid var(--line)" }}>
-            {[["위험 의심", "3", "var(--risk)"], ["확인 필요", "2", "var(--review)"], ["미검사", "3", "#a0a4ab"]].map(([label, value, color]) => (
+            {[["위험 신호", "3", "var(--risk)"], ["검토 필요", "2", "var(--review)"], ["미검사", "3", "#a0a4ab"]].map(([label, value, color]) => (
               <div key={label} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                 <span className="faint" style={{ fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}><span style={{ width: 8, height: 8, borderRadius: 999, background: color }} />{label}</span>
                 <b style={{ fontSize: 28 }}>{value}</b>
@@ -114,7 +114,7 @@ export const stageScreens: { key: string; label: string; node: ReactNode }[] = [
           <div className="quiet" style={{ fontSize: 13, lineHeight: 1.6 }}><b>개선 방법</b> 유료 옵션의 기본 선택을 해제하고 구매자가 직접 선택하게 하세요.</div>
         </div>
       </Browser>
-      <Note badge={<Badge kind="done">보고서</Badge>} numbered={false}>16가지 항목을 위험 의심, 확인 필요, 미검사로 나누고 스크린샷과 가격 원장으로 근거를 연결해요.</Note>
+      <Note badge={<Badge kind="done">보고서</Badge>} numbered={false}>16가지 항목을 위험 신호, 검토 필요, 미관찰, 미검사로 나누고 스크린샷과 가격 원장으로 근거를 연결해요.</Note>
     </>,
   },
 ];

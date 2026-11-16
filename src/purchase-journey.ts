@@ -149,6 +149,31 @@ async function clickAndSettle(page: Page, action: Locator) {
   if (changed && page.url() !== before) await page.waitForLoadState("domcontentloaded", { timeout: 1_500 }).catch(() => {});
 }
 
+export async function inspectInitialCart(page: Page): Promise<{ count?: number; verifiedEmpty: boolean }> {
+  const action = await actionCandidate(page, openCart);
+  if (!action.action) return { verifiedEmpty: false };
+  const returnUrl = page.url();
+  try {
+    await clickAndSettle(page, action.action);
+    const panel = page.locator('[role="dialog"]:visible, [aria-modal="true"]:visible, aside:visible, div.fixed.inset-0:visible').last();
+    const text = (await (await panel.count() ? panel.innerText() : page.locator("body").innerText()).catch(() => ""))
+      .replace(/\s+/g, " ").trim();
+    const countMatch = text.match(/(?:장바구니|쇼핑백|카트|cart|bag|basket)\s*[(:：]?\s*(\d+)\s*(?:개|items?)?\s*\)?/i);
+    const count = countMatch ? Number(countMatch[1]) : undefined;
+    const emptyCopy = /(?:장바구니|쇼핑백|카트).{0,40}(?:비어|없습니다|담아보세요)|(?:cart|bag|basket).{0,40}(?:empty|no items)/i.test(text);
+    const verifiedEmpty = count === 0 || emptyCopy;
+    return { ...(count === undefined && !verifiedEmpty ? {} : { count: count ?? 0 }), verifiedEmpty };
+  } catch {
+    return { verifiedEmpty: false };
+  } finally {
+    // Return to the original read-only surface, dismissing any cart drawer
+    // before product selection without changing the cart contents.
+    if (page.url() !== returnUrl || await page.locator("div.fixed.inset-0:visible").count()) {
+      await page.goto(returnUrl, { waitUntil: "domcontentloaded", timeout: 5_000 }).catch(() => undefined);
+    }
+  }
+}
+
 /** Close a blocking modal only when its visible dialog exposes one unambiguous
  * dismiss control. Never press arbitrary overlays or marketing actions. */
 async function dismissBlockingDialog(page: Page) {

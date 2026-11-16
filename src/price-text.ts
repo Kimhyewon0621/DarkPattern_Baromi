@@ -38,3 +38,16 @@ export function feeMentionsFromText(text: string) {
     return amount === null ? [] : [{ key: match[1], won: amount }];
   });
 }
+
+/** Extract a labelled payable total from visible price rows; an arbitrary
+ * product price is not interchangeable with a checkout total. */
+export function displayedTotal(lines: string[]) {
+  const total = /(?:총\s*(?:결제|판매|구매|납부)?\s*(?:금액|가격|비용|액)|최종\s*(?:결제|금액)|total(?:\s*(?:price|amount|due))?)\s*[:：]?\s*[₩$£€]?\s*(\d[\d,.]*)\s*(?:원|KRW)?/i;
+  for (const line of lines) {
+    const value = line.match(total)?.[1];
+    if (!value) continue;
+    const parsed = Number(value.replace(/[,.]/g, ""));
+    if (Number.isSafeInteger(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}

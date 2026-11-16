@@ -3,6 +3,7 @@ import type { SurfaceObservation } from "./purchase-journey";
 import type { CrawledSitePage } from "./site-crawler";
 import { legalRules } from "./legal-rules";
 import { contextualRuleTypes, type RuleType } from "./rule-strategy";
+import { assessCrawledExitHierarchy } from "./detectors/misdirected-hierarchy";
 
 export type ReviewCandidate = {
   id: string;
@@ -12,9 +13,18 @@ export type ReviewCandidate = {
   reason: string;
   evidenceIds: string[];
   ruleType?: Finding["type"];
+  /** Used for deterministic crawl assessments that should not be sent to AI review. */
+  findingStatus?: "SUSPECTED";
   observedFacts?: string[];
   missingInformation?: string[];
 };
+
+/** Keep bounded report payloads from dropping candidates already associated
+ * with a concrete guideline. Generic page notes are lower priority. */
+export function limitReviewCandidates(candidates: ReviewCandidate[], limit = 40): ReviewCandidate[] {
+  const unique = candidates.filter((candidate, index, items) => items.findIndex((item) => item.id === candidate.id) === index);
+  return [...unique.filter(({ ruleType }) => ruleType), ...unique.filter(({ ruleType }) => !ruleType)].slice(0, limit);
+}
 
 /** Maps evidence to the rule questions it can inform without interpreting the
  * merchant's wording as proof of a violation. AI receives these as review
@@ -39,6 +49,36 @@ const evidenceQuestions = {
 } satisfies Record<(typeof contextualRuleTypes)[number], EvidenceQuestion>;
 
 const reviewReason = "관찰 내용은 수집했지만, 의미와 맥락을 자동으로 확정하지 않았습니다. 근거 화면을 검토해야 합니다.";
+const urgencyEvidencePattern = /(?:남은\s*(?:재고|수량)\s*\d+\s*(?:개)?|(?:실시간|현재).{0,32}\d[\d,]*\s*명.{0,16}(?:조회|접속|보고)|(?:실시간|현재).{0,24}(?:동시\s*)?(?:접속자|조회).{0,12}\d[\d,]*\s*명|(?:남은\s*시간|카운트다운|마감|종료|혜택|특가|타이머|limited\s*time|expires|ends\s*in).{0,24}\d{1,2}:\d{2}|\d{1,2}:\d{2}.{0,24}(?:남은\s*시간|마감|종료|혜택|특가)|only\s+\d+\s+left)/i;
+const confirmShamingPattern = /포기|손해|책임|감수|놓치|잃게|후회|죄송|실망|decline.{0,30}(?:lose|miss|risk|responsibility)|no thanks.{0,30}(?:lose|miss|risk)/i;
+const trickQuestionPattern = /(?:동의하지\s*않으면|동의하지\s*않으려면|선택하지\s*않으면|거부하지\s*않으면|수신하지\s*않을\s*경우|미동의\s*시\s*(?:동의|수신)|아니오.{0,24}(?:동의|수신|혜택)|거부.{0,24}동의|(?:동의|수신).{0,24}(?:아니오|아니요|거부)|not\s+(?:agree|decline|unsubscribe)\s+unless)/i;
+const recommendationClaimPattern = /(?:실시간\s*)?(?:인기|판매|추천)\s*(?:순위|상품|제품)?\s*(?:1위|최고|베스트|TOP\s*\d+|순위)|(?:구매|판매|후기|리뷰)\s*(?:\d[\d,]*\s*(?:건|개|명)|순위|1위)|(?:best\s*seller|top\s*\d+|ranked?\s*#?\d+)/i;
+const recommendationPlacementPattern = /추천|인기|베스트|best\s*seller|popular|recommended/i;
+const commerceCuePattern = /(?:[₩$£€]\s*)?\d[\d,]*\s*원|구매하기|장바구니|담기|주문하기|add\s*to\s*cart|buy\s*now/i;
+const adDisclosurePattern = /광고|협찬|유료\s*제공|제공받|sponsored|paid\s*partnership|advertisement/i;
+const saleClaimPattern = /정가|정상가|할인|할인율|discount|was\s+[₩$£€\d]/i;
+const currencyAmountPattern = /(?:₩\s*\d[\d,]*|\d[\d,]*\s*원)/;
+const trialPattern = /무료\s*체험|\d+\s*일\s*체험|첫\s*달\s*무료|체험판|free\s*trial|trial\s*period/i;
+const recurringChargePattern = /자동\s*(?:결제|연장|갱신)|(?:매월|월마다|익월부터|월\s*\d+\s*회)|정기\s*결제|renew(?:al|s)?|recurr(?:ing)?\s*(?:charge|billing)|billed\s*monthly/i;
+
+function disguisedAdFacts(lines: string[]) {
+  if (lines.some((line) => adDisclosurePattern.test(line))) return [];
+  if (!lines.some((line) => recommendationPlacementPattern.test(line)) ||
+      !lines.some((line) => commerceCuePattern.test(line))) return [];
+  return lines.filter((line) => recommendationPlacementPattern.test(line) || commerceCuePattern.test(line)).slice(0, 8);
+}
+
+function falseDiscountFacts(lines: string[]) {
+  const text = lines.join(" ");
+  if (!saleClaimPattern.test(text) || (text.match(/(?:₩\s*\d[\d,]*|\d[\d,]*\s*원)/g) ?? []).length < 2) return [];
+  return lines.filter((line) => saleClaimPattern.test(line) || currencyAmountPattern.test(line)).slice(0, 8);
+}
+
+function hiddenSubscriptionFacts(lines: string[]) {
+  const text = lines.join(" ");
+  if (!trialPattern.test(text) || !recurringChargePattern.test(text)) return [];
+  return lines.filter((line) => trialPattern.test(line) || recurringChargePattern.test(line) || /\d[\d,]*\s*원/.test(line)).slice(0, 8);
+}
 
 function boundedText(parts: Array<string | undefined>, maxLength = 1_000) {
   return [...new Set(parts.map((part) => part?.replace(/\s+/g, " ").trim()).filter((part): part is string => Boolean(part)))].join("\n").slice(0, maxLength);
@@ -51,20 +91,18 @@ function factsForRule(type: RuleType, snapshot: Snapshot): string[] {
     `${label} · ${won}원 · ${selected ? "선택됨" : "선택 안 됨"}`);
   switch (type) {
     case "URGENCY_SCARCITY":
-      return (snapshot.textLines ?? []).filter((line) => /\d{1,2}:\d{2}|남은\s*(?:시간|수량|재고)|마감|품절\s*임박|countdown|only\s+\d+\s+left/i.test(line)).slice(0, 8);
+      return (snapshot.textLines ?? []).filter((line) => urgencyEvidencePattern.test(line)).slice(0, 8);
     case "FALSE_DISCOUNT":
-      return [...snapshot.priceLines, ...(snapshot.textLines ?? [])]
-        .filter((line) => /정가|할인|원래\s*가격|discount|was\s+[₩$£€\d]/i.test(line)).slice(0, 8);
+      return falseDiscountFacts([...snapshot.priceLines, ...(snapshot.textLines ?? [])]);
     case "HIDDEN_INFO":
       return [...snapshot.fees.map(({ label, won }) => `${label} · ${won}원`),
         ...(snapshot.textLines ?? []).filter((line) => /추가\s*(?:비용|요금)|별도\s*(?:청구|결제)|결제\s*단계|자세한\s*조건|additional\s*(?:fee|charge)|terms\s*apply/i.test(line))].slice(0, 8);
     case "CONFIRM_SHAMING":
-      return controls.filter((line) => /아니오|거절|포기|손해|책임|동의하지|decline|reject|no thanks|risk/i.test(line)).slice(0, 8);
+      return controls.filter((line) => confirmShamingPattern.test(line)).slice(0, 8);
     case "TRICK_QUESTION":
-      return controls.filter((line) => /동의|수신|거부|선택|체크|agree|consent|opt.?out|unsubscribe/i.test(line)).slice(0, 8);
+      return controls.filter((line) => trickQuestionPattern.test(line)).slice(0, 8);
     case "HIDDEN_SUBSCRIPTION":
-      return [...(snapshot.textLines ?? []).filter((line) => /구독|체험|갱신|연장|정기\s*결제|subscription|trial|renewal/i.test(line)),
-        ...options.filter((line) => /구독|체험|갱신|연장|정기\s*결제|subscription|trial|renewal/i.test(line))].slice(0, 8);
+      return hiddenSubscriptionFacts([...(snapshot.textLines ?? []), ...options]);
     default:
       return [];
   }
@@ -72,9 +110,9 @@ function factsForRule(type: RuleType, snapshot: Snapshot): string[] {
 
 function surfaceFactsForRule(type: RuleType, surface: SurfaceObservation): string[] {
   const lines = [surface.title, ...surface.text.split(/\n+/)].map((line) => line.trim()).filter(Boolean);
-  if (type === "DISGUISED_AD") return lines.filter((line) => /광고|협찬|제공|추천|sponsor|advertis|promoted/i.test(line)).slice(0, 8);
-  if (type === "FALSE_RECOMMENDATION") return lines.filter((line) => /추천|인기|순위|후기|평점|베스트|review|rating|popular|rank/i.test(line)).slice(0, 8);
-  if (type === "HIDDEN_SUBSCRIPTION") return lines.filter((line) => /구독|체험|갱신|연장|정기\s*결제|subscription|trial|renewal/i.test(line)).slice(0, 8);
+  if (type === "DISGUISED_AD") return disguisedAdFacts(lines);
+  if (type === "FALSE_RECOMMENDATION") return lines.filter((line) => recommendationClaimPattern.test(line)).slice(0, 8);
+  if (type === "HIDDEN_SUBSCRIPTION") return hiddenSubscriptionFacts(lines);
   return [];
 }
 
@@ -82,16 +120,19 @@ function crawlFactsForRule(type: RuleType, page: CrawledSitePage): string[] {
   const lines = [page.title, ...page.text.split(/\n+/), ...page.interactives.filter((item) => item.visible).map((item) => item.label)]
     .map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   const patterns: Partial<Record<RuleType, RegExp>> = {
-    URGENCY_SCARCITY: /\d{1,2}:\d{2}|남은\s*(?:시간|수량|재고)|마감|품절\s*임박|countdown|only\s+\d+\s+left/i,
+    URGENCY_SCARCITY: urgencyEvidencePattern,
     HIDDEN_INFO: /추가\s*(?:비용|요금)|별도\s*(?:청구|결제)|결제\s*단계|자세한\s*조건|additional\s*(?:fee|charge)|terms\s*apply/i,
-    FALSE_DISCOUNT: /정가|할인|원래\s*가격|discount|was\s+[₩$£€\d]/i,
-    DISGUISED_AD: /광고|협찬|제공|추천|sponsor|advertis|promoted/i,
-    CONFIRM_SHAMING: /아니오|거절|포기|손해|책임|동의하지|decline|reject|no thanks|risk/i,
-    HIDDEN_SUBSCRIPTION: /구독|체험|갱신|연장|정기\s*결제|subscription|trial|renewal/i,
-    FALSE_RECOMMENDATION: /추천|인기|순위|후기|평점|베스트|review|rating|popular|rank/i,
-    TRICK_QUESTION: /동의|수신|거부|선택|체크|agree|consent|opt.?out|unsubscribe/i,
+    FALSE_DISCOUNT: saleClaimPattern,
+    DISGUISED_AD: /추천|인기|베스트|best\s*seller|popular|recommended/i,
+    CONFIRM_SHAMING: confirmShamingPattern,
+    HIDDEN_SUBSCRIPTION: trialPattern,
+    FALSE_RECOMMENDATION: recommendationClaimPattern,
+    TRICK_QUESTION: trickQuestionPattern,
   };
   const pattern = patterns[type];
+  if (type === "DISGUISED_AD") return disguisedAdFacts(lines);
+  if (type === "FALSE_DISCOUNT") return falseDiscountFacts(lines);
+  if (type === "HIDDEN_SUBSCRIPTION") return hiddenSubscriptionFacts(lines);
   return pattern ? [...new Set(lines.filter((line) => pattern.test(line)))].slice(0, 8) : [];
 }
 
@@ -118,11 +159,19 @@ export function collectReviewCandidates(snapshots: Snapshot[]): ReviewCandidate[
  * alone does not map a page to a dark-pattern type. */
 export function collectCrawlRuleCandidates(pages: CrawledSitePage[]): ReviewCandidate[] {
   return pages.filter((page) => page.outcome === "OBSERVED").map((page) => {
+    const hierarchy = assessCrawledExitHierarchy([page])[0];
     const text = boundedText([
       page.title, page.text,
       ...page.domText.filter((entry) => entry.visible).map((entry) => entry.text),
       ...page.interactives.filter((item) => item.visible).map((item) => item.label),
     ]);
+    if (hierarchy) return {
+      id: `review:rule:misdirected_hierarchy:${page.evidenceId}`, kind: "VISUAL_ACCESSIBILITY" as const, stage: "surface" as const,
+      text: hierarchy.reason, reason: "같은 내비게이션 안에서 계정 종료 링크와 동급 링크의 시각적 차이가 측정됐습니다.",
+      evidenceIds: [hierarchy.evidenceId], ruleType: "MISDIRECTED_HIERARCHY" as const,
+      findingStatus: hierarchy.status,
+      observedFacts: [hierarchy.reason], missingInformation: ["이 링크의 중요도와 다른 탐색 동작 간 실제 기능 차이"],
+    };
     return {
       id: `review:crawl:${page.evidenceId}`, kind: "SEMANTIC_REVIEW" as const, stage: "surface" as const,
       text: text || "화면의 구조화된 요소를 수집했습니다.", reason: reviewReason, evidenceIds: [page.evidenceId],

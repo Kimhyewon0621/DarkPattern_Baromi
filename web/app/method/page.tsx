@@ -37,9 +37,9 @@ export default function MethodPage() {
       </DocBlock>
       <DocBlock kicker="05" title="판정과 보고서">
         <dl className="doc-dl">
-          <div><dt>위험 의심</dt><dd>확인된 사실 증거가 규칙 조건을 충족했어요.</dd></div>
-          <div><dt>확인 필요</dt><dd>문구·관계·맥락을 사람이 더 봐야 해요.</dd></div>
-          <div><dt>발견 안 됨</dt><dd>필요한 범위를 살펴봤지만 신호를 관찰하지 못했어요.</dd></div>
+          <div><dt>위험 신호</dt><dd>확인된 사실 증거가 규칙 조건을 충족했어요.</dd></div>
+          <div><dt>검토 필요</dt><dd>문구·관계·맥락을 사람이 더 봐야 해요.</dd></div>
+          <div><dt>미관찰</dt><dd>필요한 범위를 살펴봤지만 신호를 관찰하지 못했어요.</dd></div>
           <div><dt>미검사</dt><dd>범위에 도달하지 못했거나 차단돼 판단할 수 없어요. 이유를 함께 보여드려요.</dd></div>
         </dl>
       </DocBlock>

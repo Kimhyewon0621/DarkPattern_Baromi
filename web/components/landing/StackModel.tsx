@@ -108,7 +108,7 @@ export function StackModel() {
       onPointerMove={move}
       onPointerLeave={() => setTilt({ x: 0, y: 0 })}
       role="img"
-      aria-label="쇼핑몰 구매 단계를 층으로 쌓은 3D 모델. 아래부터 공개 첫 화면, 상품 상세, 장바구니, 주문서이고, 상품 상세와 주문서에 위험 의심 표시가 있어요."
+      aria-label="쇼핑몰 구매 단계를 층으로 쌓은 3D 모델. 아래부터 공개 첫 화면, 상품 상세, 장바구니, 주문서이고, 상품 상세와 주문서에 위험 신호 표시가 있어요."
     >
       <div className="model__scale" style={{ "--fit-s": fit.s, "--fit-x": `${fit.x}px`, "--fit-y": `${fit.y}px` } as CSSProperties}>
         <div className="model__float">
@@ -137,7 +137,7 @@ export function StackModel() {
                 </div>
               </div>
               <span className="model__anchor" style={label}><span className="model__label">상품 상세 <span className="tnum faint">29,000</span></span></span>
-              <span style={{ position: "absolute", right: 24, top: 40, transformStyle: "preserve-3d" }}><span className="model__tag" style={tag}>위험 의심</span></span>
+              <span style={{ position: "absolute", right: 24, top: 40, transformStyle: "preserve-3d" }}><span className="model__tag" style={tag}>위험 신호</span></span>
             </div>
 
             <div className="model__pane" style={pane(2)} aria-hidden="true">
@@ -158,7 +158,7 @@ export function StackModel() {
                 <div className="money money--total"><span>총 결제</span><span>33,000원</span></div>
               </div>
               <span className="model__anchor" style={label}><span className="model__label">주문서 <span className="tnum faint">33,000</span></span></span>
-              <span style={{ position: "absolute", right: 24, top: 120, transformStyle: "preserve-3d" }}><span className="model__tag" style={tag}>위험 의심</span></span>
+              <span style={{ position: "absolute", right: 24, top: 120, transformStyle: "preserve-3d" }}><span className="model__tag" style={tag}>위험 신호</span></span>
             </div>
           </div>
         </div>

@@ -12,7 +12,7 @@ function monthlyAmount(lines: string[]) {
 }
 
 export type PriceComparisonAssessment = {
-  status: "SUSPECTED" | "REVIEW_NEEDED" | "NOT_OBSERVED";
+  status: "SUSPECTED" | "NOT_OBSERVED";
   reason: string;
   evidenceIds: string[];
 };
@@ -30,28 +30,41 @@ export function assessPriceComparison(snapshots: Snapshot[]): PriceComparisonAss
   const months = amount(termMatch?.[1] ?? termMatch?.[2]);
   const productTotal = totalAmount(productLines);
   const checkoutTotal = totalAmount(checkoutLines);
+  const cart = snapshots.find((item) => item.stage === "cart");
   const evidence = [product, checkout];
   const ids = evidenceIds(evidence);
   if (monthlyWon && checkoutTotal && productTotal === null) {
     const sameConditions = product.options.length === 0 && checkout.options.length === 0
       && product.fees.length === 0 && checkout.fees.length === 0
-      && snapshots.find((item) => item.stage === "cart")?.cartItemCount === 1;
+      && cart?.cartContentsVerified === true
+      && cart.cartItemCount === 1
+      && cart.requestedQuantity === 1
+      && Boolean(product.productIdentity)
+      && cart.requestedProductIdentity === product.productIdentity
+      && cart.cartLineIdentities?.length === 1
+      && cart.cartLineIdentities[0] === product.productIdentity;
     if (sameConditions && months && months >= 2 && monthlyWon * months === checkoutTotal) return {
       status: "SUSPECTED",
       reason: `상품 화면에는 월 ${monthlyWon.toLocaleString("ko-KR")}원과 ${months}개월 의무 기간만 표시되고, 비교에 필요한 총 ${checkoutTotal.toLocaleString("ko-KR")}원은 주문서에서 처음 확인됩니다.`,
       evidenceIds: ids,
     };
-    return {
-      status: "REVIEW_NEEDED",
-      reason: "상품 화면은 월 납부액을 표시하지만 총비용은 주문서에서 처음 확인됩니다. 기간·수량·옵션·필수 비용 조건을 대조해야 합니다.",
-      evidenceIds: ids,
-    };
+    return null;
   }
-  const cart = snapshots.find((item) => item.stage === "cart");
-  if (productTotal !== null && checkoutTotal === productTotal && cart?.cartItemCount === 1
+  // Equal-looking totals alone do not establish a clean comparison: the cart
+  // badge may count units or lines and the checkout may contain another item.
+  // Require verified cart-line identity and complete price/fee extraction at
+  // both endpoints before saying that no discrepancy was observed.
+  const comparableConditions = product.inspection?.prices === "COMPLETE"
+    && product.inspection.feeRows === "COMPLETE"
+    && checkout.inspection?.prices === "COMPLETE"
+    && checkout.inspection.feeRows === "COMPLETE"
+    && cart?.cartContentsVerified === true
+    && cart.cartItemCount === 1
+    && cart.requestedQuantity === 1;
+  if (comparableConditions && productTotal !== null && checkoutTotal === productTotal
     && product.options.length === 0 && checkout.options.length === 0
     && product.fees.length === 0 && checkout.fees.length === 0) return {
-    status: "NOT_OBSERVED", reason: "단일 상품·옵션·추가 비용이 없는 구매 경로에서 상품 화면과 주문서의 총액이 일치했습니다.", evidenceIds: [...ids, ...evidenceIds([cart])],
+    status: "NOT_OBSERVED", reason: "동일 상품 한 개와 동일 수량의 구매 경로에서 가격·필수 비용 추출이 완료됐고, 상품 화면과 주문서 총액이 일치했습니다.", evidenceIds: [...ids, ...evidenceIds([cart!])],
   };
   return null;
 }

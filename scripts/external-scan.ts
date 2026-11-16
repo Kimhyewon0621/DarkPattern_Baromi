@@ -1,6 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { db } from "../src/db";
 import { encryptCredentials } from "../src/credential-vault";
 import { runScanJob } from "../src/scan-job";
@@ -35,24 +35,39 @@ type ScanSummary = {
   };
   phaseResults: Record<string, { status: string; durationMs?: number; reason?: string }>;
   surfaceDestinations: { kind: string; href: string; text: string }[];
-  siteCrawl: { complete: boolean; loginReplayed: boolean; duplicateStates: number; visited: number; discovered: number; visitedStates: number; discoveredStates: number; uniqueVisitedUrls: number; uniqueDiscoveredUrls: number; productCards: number; failed: number; pending: string[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; skippedControls: { url: string; label: string; reason: string }[]; pages: { url: string; statePath: string[]; outcome: string; failureReason?: string; durationMs?: number; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound: string[]; productCardsFound: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactiveLabels: string[]; interactives: PageInteractiveEvidence[]; formCount: number }[] } | null;
+  siteCrawl: { complete: boolean; loginReplayed: boolean; controlProbeCount: number; controlProbeDurationMs: number; duplicateStates: number; visited: number; discovered: number; visitedStates: number; discoveredStates: number; uniqueVisitedUrls: number; uniqueDiscoveredUrls: number; productCards: number; failed: number; pending: string[]; unexploredControls: { url: string; label: string; reason: string }[]; nonNavigatingControls: { url: string; label: string; reason: string }[]; skippedControls: { url: string; label: string; reason: string }[]; pages: { url: string; statePath: string[]; outcome: string; failureReason?: string; durationMs?: number; title: string; text: string; domText: PageTextEvidence[]; linksFound: number; controlsFound: string[]; productCardsFound: string[]; bodyTextLength: number; anchorCount: number; interactiveCount: number; elementCount: number; hiddenTextElementCount: number; interactiveLabels: string[]; interactives: PageInteractiveEvidence[]; formCount: number }[] } | null;
   ruleCoverage: Record<string, { status: string; reason: string; evidenceIds: string[] }>;
   interactions: { id: string; stage: string; kind: string; outcome: string; afterSelected?: boolean; revealedText?: string[] }[];
   notTestedReasons: Record<string, string>;
-  snapshots: { stage: string; path: string }[];
+  snapshots: {
+    stage: string; path: string; productIdentity?: string; requestedProductIdentity?: string;
+    cartItemCount?: number; cartCountBeforeAdd?: number; cartBaselineVerified?: boolean; requestedQuantity?: number;
+    cartLineIdentities?: string[]; cartLinesComplete?: boolean; cartContentsVerified?: boolean;
+    priceLineCount?: number; feeCount?: number; inspection?: { prices?: string; feeRows?: string };
+    priceLines?: string[];
+    payableAmount?: number;
+    payableCandidates?: number[];
+  }[];
   surfaceObservations: { kind: string; outcome: string; source?: string }[];
   findings: { type: string; stage: string; status: string; reason: string; evidenceIds: string[] }[];
   reviewCandidates: { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string }[];
 };
 async function summarize(reportPath: string): Promise<ScanSummary> {
   const report = JSON.parse(await readFile(reportPath, "utf8")) as {
-    scanStatus?: string; snapshots?: { stage: string; url: string }[]; collectionFailure?: string | null; collectionFailureCode?: string | null;
+    scanStatus?: string; snapshots?: {
+      stage: string; url: string; productIdentity?: string; requestedProductIdentity?: string;
+      cartItemCount?: number; cartCountBeforeAdd?: number; cartBaselineVerified?: boolean; requestedQuantity?: number;
+      cartLineIdentities?: string[]; cartLinesComplete?: boolean; cartContentsVerified?: boolean;
+      priceLines?: string[]; fees?: unknown[]; inspection?: { prices?: string; feeRows?: string };
+      payableAmount?: number;
+      payableCandidates?: number[];
+    }[]; collectionFailure?: string | null; collectionFailureCode?: string | null;
     explorationBlocker?: unknown; stageTimingsMs?: Record<string, number>; durationMs?: number;
     explorationMetrics?: ScanSummary["explorationMetrics"];
     phaseResults?: ScanSummary["phaseResults"];
     surfaceDestinations?: ScanSummary["surfaceDestinations"];
     siteCrawl?: {
-      complete: boolean; loginReplayed?: boolean; duplicateStates?: unknown[]; visitedUrlCount: number; discoveredUrlCount: number; visitedStateCount: number; discoveredStateCount: number; uniqueVisitedUrlCount: number; uniqueDiscoveredUrlCount: number; productCardCount: number; failedUrlCount: number; pendingUrls: string[];
+      complete: boolean; loginReplayed?: boolean; controlProbeCount?: number; controlProbeDurationMs?: number; duplicateStates?: unknown[]; visitedUrlCount: number; discoveredUrlCount: number; visitedStateCount: number; discoveredStateCount: number; uniqueVisitedUrlCount: number; uniqueDiscoveredUrlCount: number; productCardCount: number; failedUrlCount: number; pendingUrls: string[];
       unexploredControls: { url: string; label: string; reason: string }[];
       nonNavigatingControls: { url: string; label: string; reason: string }[];
       skippedControls: { url: string; label: string; reason: string }[];
@@ -83,6 +98,8 @@ async function summarize(reportPath: string): Promise<ScanSummary> {
     surfaceDestinations: (report.surfaceDestinations ?? []).map(({ kind, href, text }) => ({ kind, href, text: text.slice(0, 100) })),
     siteCrawl: report.siteCrawl ? {
       complete: report.siteCrawl.complete, loginReplayed: report.siteCrawl.loginReplayed === true,
+      controlProbeCount: report.siteCrawl.controlProbeCount ?? 0,
+      controlProbeDurationMs: report.siteCrawl.controlProbeDurationMs ?? 0,
       duplicateStates: report.siteCrawl.duplicateStates?.length ?? 0, visited: report.siteCrawl.visitedUrlCount,
       discovered: report.siteCrawl.discoveredUrlCount, visitedStates: report.siteCrawl.visitedStateCount,
       discoveredStates: report.siteCrawl.discoveredStateCount, uniqueVisitedUrls: report.siteCrawl.uniqueVisitedUrlCount,
@@ -102,7 +119,13 @@ async function summarize(reportPath: string): Promise<ScanSummary> {
     }])),
     interactions: (report.interactions ?? []).map(({ id, stage, kind, outcome, afterSelected, revealedText }) => ({ id, stage, kind, outcome, afterSelected, revealedText })),
     notTestedReasons: Object.fromEntries(Object.entries(report.ruleCoverage ?? {}).filter(([, result]) => result.status === "NOT_TESTED").map(([type, result]) => [type, result.reason])),
-    snapshots: (report.snapshots ?? []).map(({ stage, url }) => ({ stage, path: (() => { try { return new URL(url).pathname; } catch { return ""; } })() })),
+    snapshots: (report.snapshots ?? []).map(({ stage, url, productIdentity, requestedProductIdentity, cartItemCount,
+      cartCountBeforeAdd, cartBaselineVerified, requestedQuantity, cartLineIdentities, cartLinesComplete, cartContentsVerified, priceLines, payableAmount, payableCandidates, fees, inspection }) => ({
+      stage, path: (() => { try { return new URL(url).pathname; } catch { return ""; } })(),
+      productIdentity, requestedProductIdentity, cartItemCount, cartCountBeforeAdd, cartBaselineVerified, requestedQuantity,
+      cartLineIdentities, cartLinesComplete, cartContentsVerified,
+      priceLineCount: priceLines?.length, priceLines: priceLines?.map((line) => redactValidationText(line, credentials)), payableAmount, payableCandidates, feeCount: fees?.length, inspection,
+    })),
     surfaceObservations: (report.surfaceObservations ?? []).map(({ kind, outcome, source }) => ({ kind, outcome, source })),
     findings: (report.findings ?? []).map(({ type, stage, status, reason, evidence }) => ({
       type, stage, status, reason: redactValidationText(reason, credentials),
@@ -193,6 +216,11 @@ async function main() {
       await store.scan.create({ data: { id: scanId, shopId, scenario: "public", executionMode: "DYNAMIC", viewport, purchasePath, targetUrl: publicTarget.url, status: "RUNNING", credentialCiphertext: encryptCredentials(credentials) } });
       const reportPath = await runScanJob(scanId, publicTarget.url);
       if (!reportPath) throw new Error("외부 진단 보고서 경로가 없습니다.");
+      if (process.env.BAROMI_SMOKE_DEBUG_CART_SCREENSHOT === "1") {
+        const rawReport = JSON.parse(await readFile(reportPath, "utf8")) as { snapshots?: { stage: string; screenshot?: string }[] };
+        const cartScreenshot = rawReport.snapshots?.find(({ stage }) => stage === "cart")?.screenshot;
+        if (cartScreenshot) await copyFile(join(dirname(reportPath), cartScreenshot), "/private/tmp/baromi-vero-cart-debug.png");
+      }
       const summary = await summarize(reportPath);
       reports.push(summary);
       await writeFile(join(artifactsDirectory, `run-${attempt + 1}.json`), JSON.stringify(summary, null, 2) + "\n");

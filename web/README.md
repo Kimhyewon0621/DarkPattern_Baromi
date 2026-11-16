@@ -15,7 +15,7 @@
 |---|---|
 | `/` | 랜딩. 스크롤하면 오른쪽 패널이 3D 모델에서 단계별 실제 화면으로 바뀝니다 |
 | `/about`, `/method`, `/criteria`, `/principles` | 서비스 소개, 분석 방법, 16가지 탐지 기준, 안전 원칙 |
-| `/login` | 자리만 잡은 화면. 공개 API에 계정 엔드포인트가 없어 실제 로그인은 하지 않고 세션 방식을 안내합니다 |
+| `/login` | Supabase 이메일 로그인·가입. 로그인 세션의 access token을 API 요청에 전달합니다 |
 | `/scan/new` | 새 진단: 진단 범위, PC/모바일, 장바구니/바로구매, 테스트 계정, 동의, 소유 확인(메타 태그, 파일, DNS TXT) |
 | `/scan/[id]` | 진단 진행: 1.5초마다 상태 조회, `phaseResults` 기준 구매 3단계·별도 영역 7개의 상태·소요 시간·사유, 진단 중단 |
 | `/report/[id]` | 진단 보고서: 16개 유형 분포, 구매 흐름 타임라인, 발견 상세와 증거, 16가지 항목 표(`ruleCoverage`), 가격 원장, 검사 범위 10개, 재진단 비교, AI 정밀 분석 |
@@ -34,20 +34,24 @@ cp .env.example .env.local
 npm run dev
 ```
 
+웹과 API를 함께 로컬에서 실행하려면 루트 API 서버는 `127.0.0.1:3000`, 이 앱은 `127.0.0.1:3001`에서 실행하세요. `web/.env.local`에 `BAROMI_API_ORIGIN=http://127.0.0.1:3000`, Supabase 공개 URL/키, `NEXT_PUBLIC_DEMO_MODE=false`를 설정하고 루트 `.env.local`의 `BAROMI_WEB_ORIGINS`에 `http://127.0.0.1:3001`을 추가합니다. 프론트 포트나 주소를 바꾸면 허용 origin도 함께 바꿔야 합니다.
+
 백엔드 없이 화면만 보려면 `.env.local`에 `NEXT_PUBLIC_DEMO_MODE=true`를 넣으세요. 새 진단부터 진행, 보고서까지 예시 데이터로 동작합니다.
 
 ## 환경변수
 
 | 이름 | 설명 |
 |---|---|
-| `BAROMI_API_ORIGIN` | DarkPatternPrevent 백엔드의 공개 주소(끝에 `/` 없이). 설정하면 `/api/v1/*` 요청이 이 주소로 전달됩니다. 브라우저 입장에서는 같은 도메인이라 백엔드의 세션 쿠키(`sameSite: strict`)가 그대로 동작합니다. |
+| `BAROMI_API_ORIGIN` | DarkPatternPrevent API 서버의 주소(끝에 `/` 없이). 설정하면 `/api/v1/*` 요청이 이 주소로 전달됩니다. Supabase access token은 프론트에서 Bearer 인증으로 전달됩니다. |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL. |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | 브라우저에 사용해도 되는 Supabase publishable/anon key. 비밀키는 넣지 않습니다. |
 | `NEXT_PUBLIC_DEMO_MODE` | `true`이면 모든 화면이 `lib/demo.ts`의 예시 데이터를 씁니다. Vercel 미리보기용입니다. |
 
 ## Vercel 배포
 
 1. Vercel에서 **Add New › Project**로 `DarkPattern_Baromi` 저장소를 가져옵니다.
 2. **Root Directory를 `web`으로 지정**합니다. 프레임워크는 Next.js로 자동 인식됩니다. (루트는 백엔드 앱이라 Vercel에서 돌지 않습니다.)
-3. **Settings › Environment Variables**에 `BAROMI_API_ORIGIN`(운영) 또는 `NEXT_PUBLIC_DEMO_MODE=true`(미리보기)를 넣습니다.
+3. **Settings › Environment Variables**에 `BAROMI_API_ORIGIN`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`를 넣습니다. 인증 API 서버의 `BAROMI_WEB_ORIGINS`에도 이 프론트 도메인을 등록합니다. 미리보기에서만 `NEXT_PUBLIC_DEMO_MODE=true`를 사용합니다.
 4. 배포합니다.
 
 ### 백엔드는 Vercel 밖에서 운영해야 합니다
@@ -65,7 +69,7 @@ npm run dev
 | 발견 항목 상세 | `GET /findings/:id`, `GET /evidences/:scanId-:stage` |
 | 진단 이력 | `GET /shops/:id`, `GET /shops/:id/scans`, `DELETE /scans/:id`, `DELETE /shops/:id` |
 
-`X-Baromi-Owner`, `X-Baromi-Worker` 헤더와 Spring 직접 호출은 쓰지 않습니다. 세션은 서버가 발급하는 `darkpattern-session` HttpOnly 쿠키로만 유지되고, 프론트 코드는 쿠키를 읽거나 저장하지 않습니다.
+`X-Baromi-Owner`, `X-Baromi-Worker` 헤더와 Spring 직접 호출은 쓰지 않습니다. Supabase Auth가 사용자 로그인을 관리하고, 프론트 API 클라이언트가 현재 세션의 access token을 `Authorization: Bearer`로 전달합니다. 백엔드는 Supabase claim을 검증해 사용자별 데이터 범위를 정합니다. 브라우저에는 publishable/anon key만 두며 service-role key는 사용하지 않습니다.
 
 ### 명세에 맞춘 처리
 
@@ -106,14 +110,14 @@ lib/
 
 ### 16가지 항목 결과를 정하는 방식 (`lib/checks.ts`)
 
-보고서에 서버의 `ruleCoverage`가 있으면 그대로 씁니다(`SUSPECTED`→위험 의심, `REVIEW_NEEDED`→확인 필요, `NOT_OBSERVED`→발견 안 됨, `NOT_TESTED`→미검사와 사유). 없을 때만 아래 규칙으로 계산합니다.
+보고서에 서버의 `ruleCoverage`가 있으면 그대로 씁니다(`SUSPECTED`→위험 신호, `REVIEW_NEEDED`→검토 필요, `NOT_OBSERVED`→미관찰, `NOT_TESTED`→미검사와 사유). 없을 때만 아래 규칙으로 계산합니다.
 
-- 해당 유형의 `SUSPECTED` 발견이 있으면 **위험 의심**, `REVIEW_NEEDED`만 있으면 **확인 필요**
+- 해당 유형의 `SUSPECTED` 발견이 있으면 **위험 신호**, `REVIEW_NEEDED`만 있으면 **검토 필요**
 - 발견이 없더라도 그 항목에 필요한 화면을 검사하지 못했으면 **미검사**와 이유
   - 로그인·구독·해지·추천 관련 항목: 해당 별도 탐색 영역이 `COVERED`가 아니면 미검사
   - 뒤늦게 붙는 비용, 숨겨진 비용: 주문서를 검사하지 못했으면 미검사
   - 장바구니 몰래 추가: 장바구니를 검사하지 못했거나 바로구매 경로면 미검사
-- 위 조건을 모두 통과해야 **발견 안 됨**
+- 위 조건을 모두 통과해야 **미관찰**
 
 백엔드가 항목별 검사 범위를 직접 내려주게 되면 이 파일만 바꾸면 됩니다.
 

@@ -6,6 +6,7 @@ import { useState, type ReactNode } from "react";
 import { ButtonLink } from "@/components/ui/Button";
 import { Icon } from "@/components/ui/Icon";
 import { Logo } from "@/components/ui/Logo";
+import { AccountControls } from "@/components/auth/AccountControls";
 
 /** Information architecture taken from feature/redesign; visuals follow the "Ledger" system. */
 export const siteNav = [
@@ -37,7 +38,7 @@ export function SiteHeader() {
           ))}
         </nav>
         <div className="lp-header__cta">
-          <Link href="/login" className="btn btn--tertiary btn--md site-hide-sm">로그인</Link>
+          <span className="site-hide-sm"><AccountControls /></span>
           <ButtonLink href="/report/sample" variant="secondary" className="site-hide-sm">예시 보고서</ButtonLink>
           <ButtonLink href="/scan/new" variant="brand">무료로 진단하기</ButtonLink>
           <button
@@ -54,9 +55,10 @@ export function SiteHeader() {
       </div>
       {open ? (
         <nav id="site-menu" aria-label="모바일 메뉴" className="site-menu">
-          {[...siteNav, { href: "/report/sample", label: "예시 보고서" }, { href: "/shops", label: "내 쇼핑몰" }, { href: "/login", label: "로그인" }].map((item) => (
+          {[...siteNav, { href: "/report/sample", label: "예시 보고서" }, { href: "/shops", label: "내 쇼핑몰" }].map((item) => (
             <Link key={item.href} href={item.href} onClick={() => setOpen(false)}>{item.label}</Link>
           ))}
+          <AccountControls compact />
         </nav>
       ) : null}
     </header>

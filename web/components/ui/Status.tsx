@@ -4,7 +4,7 @@ import { scanStatusLabels } from "@/lib/labels";
 
 /** Result of one of the 16 checks. Shape + label, never color alone. */
 export type ResultKind = "risk" | "review" | "clear" | "none";
-export const resultLabels: Record<ResultKind, string> = { risk: "위험 의심", review: "확인 필요", clear: "발견 안 됨", none: "미검사" };
+export const resultLabels: Record<ResultKind, string> = { risk: "위험 신호", review: "검토 필요", clear: "미관찰", none: "미검사" };
 
 type MarkKind = ResultKind | "run" | "wait" | "done" | "stop" | "partial";
 
