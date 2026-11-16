@@ -115,9 +115,13 @@ export async function capture(page: Page, stage: Stage, directory: string, main:
       .replace(/\s+/g, " ").trim().slice(0, 240);
     if (!label) return [];
     const { x, y, width, height } = control.getBoundingClientRect();
+    const style = window.getComputedStyle(control);
+    const groupNode = control.closest("fieldset, [role='group'], [role='dialog'], form");
+    const group = groupNode ? `${groupNode.tagName.toLowerCase()}:${Array.from(document.querySelectorAll("fieldset, [role='group'], [role='dialog'], form")).indexOf(groupNode)}` : undefined;
     const href = control instanceof HTMLAnchorElement ? control.href : undefined;
     const selected = native ? control.checked : control.getAttribute("aria-checked") === "true";
     return [{ label, kind, bounds: { x: x + window.scrollX, y: y + window.scrollY, width, height },
+      color: style.color, backgroundColor: style.backgroundColor, opacity: Number(style.opacity), tabIndex: control.tabIndex, ...(group ? { group } : {}),
       ...(kind === "CHECKBOX" || kind === "RADIO" ? { selected } : {}), ...(href ? { href } : {}) }];
   }));
   const surfaceSignals = await main.locator('a, button, [role="button"], label, [role="dialog"]').evaluateAll((nodes) => {
@@ -230,8 +234,11 @@ export async function scanDemo(
         } else {
           await page.getByRole("link", { name: purchasePath === "DIRECT" ? "바로구매" : "주문서 보기", exact: true }).click();
         }
-        snapshot = await capture(page, stage, directory, page.locator('main[data-stage="' + stage + '"]'));
-        if (stage === "product") interactions.push(...await observePaidOptionChanges(page, page.locator('main[data-stage="product"]'), stage));
+        const root = page.locator('main[data-stage="' + stage + '"]');
+        snapshot = await capture(page, stage, directory, root);
+        if (stage === "product" || stage === "checkout") {
+          interactions.push(...await observePaidOptionChanges(page, root, stage));
+        }
       } catch (error) {
         if (snapshots.length === 0) throw error;
         break;
@@ -251,8 +258,8 @@ export async function scanDemo(
       snapshots,
       interactions,
       priceLedger: buildPriceLedger(snapshots),
-      reviewCandidates: [...collectRuleReviewCandidates({ snapshots, surfaces: [], crawlPages: [] }), ...collectReviewCandidates(snapshots)],
-      findings: detect(snapshots),
+      reviewCandidates: [...collectRuleReviewCandidates({ snapshots, surfaces: [], crawlPages: [], interactions }), ...collectReviewCandidates(snapshots)],
+      findings: detect(snapshots, [], interactions),
     } as const;
     await writeFile(join(directory, "report.json"), JSON.stringify(report, null, 2) + "\n");
     return report;

@@ -1,12 +1,13 @@
 import type { CrawledSitePage } from "./site-crawler";
 import type { SurfaceObservation } from "./purchase-journey";
+import type { InteractionEvidence } from "./rules";
 import { contextualRuleTypes } from "./rule-strategy";
 
-export type ReviewCandidate = { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string };
+export type ReviewCandidate = { id: string; kind: string; stage: string; text: string; reason: string; evidenceIds: string[]; ruleType?: string; observedFacts?: string[]; missingInformation?: string[] };
 export type SnapshotEvidence = { evidenceId?: string; stage?: string; url?: string; priceLines?: string[]; textLines?: string[]; options?: unknown[]; fees?: unknown[]; precheckedSignals?: unknown[]; surfaceSignals?: unknown[]; decisionControls?: unknown[] };
 export type ReviewEvidence = {
   evidenceId: string;
-  source: "snapshot" | "crawl_page" | "surface_observation";
+  source: "snapshot" | "crawl_page" | "surface_observation" | "interaction";
   stage?: string;
   url?: string;
   outcome?: string;
@@ -20,6 +21,7 @@ export type ReviewEvidence = {
   decisionControls?: unknown[];
   selectedControls?: string[];
   matchingVisualFacts?: { text: string; fontSize: string; color: string; opacity: string; bounds: { width: number; height: number } }[];
+  interaction?: { kind: string; controlLabel?: string; beforeSelected?: boolean; afterSelected?: boolean; beforeTotalWon?: number | null; afterTotalWon?: number | null; amountDeltaWon?: number | null; outcome: string; revealedText?: string[] };
 };
 export type AiCandidatePayload = ReviewCandidate & { evidence: ReviewEvidence[] };
 export type AiProviderCandidate = Omit<ReviewCandidate, "evidenceIds"> & { evidence: (Omit<ReviewEvidence, "evidenceId"> & { evidenceId: string })[] };
@@ -37,6 +39,14 @@ function safeUrl(raw?: string) {
     url.password = "";
     url.search = "";
     url.hash = "";
+    url.pathname = url.pathname.split("/").map((segment) => {
+      let decoded = segment;
+      try { decoded = decodeURIComponent(segment); } catch { /* keep the encoded segment */ }
+      if (!decoded) return "";
+      if (decoded !== redact(decoded) || /^\d{6,}$/.test(decoded)
+        || /^[a-f\d]{8}-[a-f\d-]{20,}$/i.test(decoded) || /^[A-Za-z\d_-]{32,}$/.test(decoded)) return "[가림]";
+      return decoded;
+    }).join("/");
     return url.href.slice(0, 500);
   } catch { return undefined; }
 }
@@ -71,19 +81,24 @@ function snapshotEvidence(item: SnapshotEvidence): ReviewEvidence | null {
 }
 
 function crawlEvidence(item: CrawledSitePage, candidate: ReviewCandidate): ReviewEvidence {
-  const relevant = candidate.text.toLocaleLowerCase();
+  const facts = (candidate.observedFacts ?? [])
+    .map((fact) => fact.toLocaleLowerCase().trim()).filter(Boolean);
+  const matchesFact = (text: string) => facts.some((fact) => {
+    const normalized = text.toLocaleLowerCase().trim();
+    return normalized.length >= 4 && (normalized.includes(fact) || fact.includes(normalized));
+  });
   const selectedControls = item.interactives.filter((control) => control.selected === true)
     .map(({ label }) => redact(label).slice(0, 300)).filter(Boolean).slice(0, 20);
   const matchingVisualFacts = candidate.kind === "VISUAL_ACCESSIBILITY" || candidate.kind === "SEMANTIC_REVIEW"
-    ? item.domText.filter((entry) => entry.visible && (candidate.kind === "SEMANTIC_REVIEW" || entry.text.toLocaleLowerCase().includes(relevant) || relevant.includes(entry.text.toLocaleLowerCase())))
-      .slice(0, candidate.kind === "SEMANTIC_REVIEW" ? 24 : 5).map(({ text, fontSize, color, opacity, bounds }) => ({ text: redact(text).slice(0, 300), fontSize, color, opacity, bounds: { width: bounds.width, height: bounds.height } }))
+    ? item.domText.filter((entry) => entry.visible && (facts.length ? matchesFact(entry.text) : candidate.kind === "VISUAL_ACCESSIBILITY" || candidate.kind === "SEMANTIC_REVIEW"))
+      .slice(0, 12).map(({ text, fontSize, color, opacity, bounds }) => ({ text: redact(text).slice(0, 300), fontSize, color, opacity, bounds: { width: bounds.width, height: bounds.height } }))
     : undefined;
   const text = item.text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const context = text.filter((line) => !relevant || line.toLocaleLowerCase().includes(relevant));
+  const context = facts.length ? text.filter(matchesFact) : text;
   return {
     evidenceId: item.evidenceId, source: "crawl_page", stage: "surface", url: safeUrl(item.url), outcome: item.outcome,
     title: redact(item.title).slice(0, 300),
-    text: (context.length ? context : text).slice(0, 30).map((line) => redact(line).slice(0, 500)).join("\n"),
+    text: context.slice(0, 20).map((line) => redact(line).slice(0, 500)).join("\n"),
     selectedControls, matchingVisualFacts,
   };
 }
@@ -98,6 +113,7 @@ function surfaceEvidence(item: SurfaceObservation): ReviewEvidence {
 export function buildAiCandidatePayload(report: {
   reviewCandidates?: readonly ReviewCandidate[];
   snapshots?: readonly SnapshotEvidence[];
+  interactions?: readonly InteractionEvidence[];
   siteCrawl?: { pages?: readonly CrawledSitePage[] };
   surfaceObservations?: readonly SurfaceObservation[];
 }): AiCandidatePayload[] {
@@ -106,6 +122,15 @@ export function buildAiCandidatePayload(report: {
     const evidence = snapshotEvidence(item);
     if (evidence) evidenceById.set(evidence.evidenceId, evidence);
   }
+  for (const item of report.interactions ?? []) evidenceById.set(item.id, {
+    evidenceId: item.id, source: "interaction", stage: item.stage,
+    interaction: {
+      kind: item.kind, controlLabel: item.controlLabel ? redact(item.controlLabel).slice(0, 300) : undefined,
+      beforeSelected: item.beforeSelected, afterSelected: item.afterSelected,
+      beforeTotalWon: item.beforeTotalWon, afterTotalWon: item.afterTotalWon, amountDeltaWon: item.amountDeltaWon,
+      outcome: item.outcome, revealedText: item.revealedText?.slice(0, 8).map((line) => redact(line).slice(0, 300)),
+    },
+  });
   for (const item of report.siteCrawl?.pages ?? []) evidenceById.set(item.evidenceId, { evidenceId: item.evidenceId, source: "crawl_page" });
   for (const item of report.surfaceObservations ?? []) evidenceById.set(item.evidenceId, surfaceEvidence(item));
 
@@ -125,7 +150,9 @@ export function buildAiCandidatePayload(report: {
       return [resolved];
     });
     if (!evidence.length) return [];
-    return [{ ...item, text: redact(item.text).slice(0, 1_000), reason: redact(item.reason).slice(0, 500), evidence }];
+    return [{ ...item, text: redact(item.text).slice(0, 1_000), reason: redact(item.reason).slice(0, 500),
+      observedFacts: item.observedFacts?.slice(0, 12).map((fact) => redact(fact).slice(0, 300)),
+      missingInformation: item.missingInformation?.slice(0, 8).map((fact) => redact(fact).slice(0, 300)), evidence }];
   });
 }
 

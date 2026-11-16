@@ -9,6 +9,7 @@ import { capture } from "./scan";
 import { scanComparisonVersion } from "./scan-comparison";
 import { detect, type InteractionEvidence, type Snapshot } from "./rules";
 import { detectForcedAction } from "./detectors/interaction-patterns";
+import { detectInitialConsentPreselection } from "./detectors/preselection";
 import { feeMentionsFromText } from "./price-text";
 import { collectCrawlRuleCandidates, collectExplorationReviewCandidate, collectReviewCandidates, collectRuleReviewCandidates, collectSurfaceReviewCandidates } from "./review-candidates";
 import { classifyReviewCandidates } from "./review-classifier";
@@ -429,10 +430,11 @@ export async function scanDynamicPublicShop(
     }
     // Put typed rule questions first: AI payloads are bounded, so generic
     // screen notes must not crowd out the eight contextual rule candidates.
-    const reviewCandidates = [...collectRuleReviewCandidates({ snapshots, surfaces: surfaceObservations, crawlPages: siteCrawl.pages }), ...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)].slice(0, 40);
-    const findings = [...detect(snapshots, firstPriceExposure?.feeMentions), ...detectForcedAction(journey.blocker ?? null, snapshots)];
+    const reviewCandidates = [...collectRuleReviewCandidates({ snapshots, surfaces: surfaceObservations, crawlPages: siteCrawl.pages, interactions }), ...collectReviewCandidates(snapshots), ...collectSurfaceReviewCandidates(surfaceObservations), ...collectCrawlRuleCandidates(siteCrawl.pages), ...collectExplorationReviewCandidate(journey.blocker ?? null)].slice(0, 40);
+    const findings = [...detect(snapshots, firstPriceExposure?.feeMentions, interactions, firstPriceExposure),
+      ...detectInitialConsentPreselection(siteCrawl.pages), ...detectForcedAction(journey.blocker ?? null, snapshots)];
     const authContext = authenticatedWithTestAccount ? "TEST_ACCOUNT" as const : "ANONYMOUS" as const;
-    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, reviewCandidates, authContext });
+    const ruleCoverage = buildRuleCoverage({ findings, snapshots, surfaceObservations, siteCrawlPages: siteCrawl.pages, reviewCandidates, authContext, firstPriceExposure });
     const report = {
       comparisonVersion: scanComparisonVersion,
       scanStatus: dynamicScanStatus(journey.reached, journey.blocker ?? null, siteCrawl.complete),

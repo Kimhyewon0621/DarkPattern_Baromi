@@ -7,7 +7,8 @@ const directory = process.env.PLAYWRIGHT_RUN_DIRECTORY ?? mkdtempSync(join(tmpdi
 process.env.PLAYWRIGHT_RUN_DIRECTORY = directory;
 process.env.DATABASE_URL = "file:" + join(directory, "test.db");
 process.env.SCAN_RESULTS_DIR = join(directory, "scans");
-process.env.DEMO_ORIGIN = "http://127.0.0.1:3100";
+const port = Number(process.env.PLAYWRIGHT_PORT ?? 3100);
+process.env.DEMO_ORIGIN = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "./tests",
@@ -15,10 +16,10 @@ export default defineConfig({
   workers: 1,
   use: { channel: process.env.PLAYWRIGHT_CHANNEL },
   webServer: {
-    command: "npm run db:setup && npm run dev -- --port 3100",
+    command: `npm run db:setup && npm run dev -- --port ${port}`,
     url: process.env.DEMO_ORIGIN,
     timeout: 60_000,
-    reuseExistingServer: false,
+    reuseExistingServer: process.env.PLAYWRIGHT_REUSE_EXISTING_SERVER === "1",
     env: {
       NEXT_TELEMETRY_DISABLED: "1",
       DEMO_ORIGIN: process.env.DEMO_ORIGIN,

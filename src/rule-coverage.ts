@@ -3,8 +3,12 @@ import type { Finding, Snapshot } from "./rules";
 import type { SurfaceObservation } from "./purchase-journey";
 import type { ReviewCandidate } from "./review-candidates";
 import { ruleDecisionModes, type RuleDecisionMode } from "./rule-strategy";
-
-const completeEngineRules = new Set<keyof typeof legalRules>(["PRESELECTION", "DRIP_PRICING", "SNEAKY_CART_ADD"]);
+import { assessMisdirectedHierarchy } from "./detectors/misdirected-hierarchy";
+import { assessCancellationObstruction } from "./detectors/cancellation-obstruction";
+import type { CrawledSitePage } from "./site-crawler";
+import { assessPriceComparison } from "./detectors/price-comparison";
+import { assessBaitSelling } from "./detectors/bait-selling";
+import type { FirstPriceExposure } from "./price-ledger";
 
 export type RuleCoverageStatus = "SUSPECTED" | "REVIEW_NEEDED" | "NOT_OBSERVED" | "NOT_TESTED";
 export type RuleCoverageResult = {
@@ -30,15 +34,21 @@ type Input = {
   findings: Finding[];
   snapshots: Snapshot[];
   surfaceObservations?: SurfaceObservation[];
+  siteCrawlPages?: CrawledSitePage[];
+  siteCrawl?: { pages?: CrawledSitePage[] };
   siteCrawlComplete?: boolean;
   reviewCandidates?: ReviewCandidate[];
   authContext?: "ANONYMOUS" | "TEST_ACCOUNT" | "UNKNOWN";
+  priceLedger?: { firstPriceExposure?: FirstPriceExposure | { status: "NOT_VERIFIED" } };
+  firstPriceExposure?: FirstPriceExposure;
 };
 
 const ids = (snapshots: Snapshot[]) => snapshots.map((item) => item.evidenceId ?? `evidence:${item.stage}`);
 
-export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], siteCrawlComplete = false, reviewCandidates = [], authContext = "UNKNOWN" }: Input): RuleCoverage {
-  const findingByType = new Map(findings.map((finding) => [finding.type, finding]));
+export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [], siteCrawlPages = [], siteCrawl, siteCrawlComplete = false, reviewCandidates = [], authContext = "UNKNOWN", firstPriceExposure, priceLedger }: Input): RuleCoverage {
+  const crawledPages = siteCrawlPages.length ? siteCrawlPages : siteCrawl?.pages ?? [];
+  const findingByType = new Map<keyof typeof legalRules, Finding[]>();
+  for (const finding of findings) findingByType.set(finding.type, [...(findingByType.get(finding.type) ?? []), finding]);
   const stages = new Set(snapshots.map(({ stage }) => stage));
   const observedSurfaces = new Set(surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ kind }) => kind));
   const allEvidenceIds = [...ids(snapshots), ...surfaceObservations.filter(({ outcome }) => outcome === "OBSERVED").map(({ evidenceId }) => evidenceId)];
@@ -79,10 +89,11 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
   };
 
   const results = Object.fromEntries((Object.keys(legalRules) as (keyof typeof legalRules)[]).map((type) => {
-    const finding = findingByType.get(type);
-    if (finding) return [type, {
-      status: finding.status, reason: finding.reason,
-      evidenceIds: finding.evidenceIds ?? ids(finding.evidence),
+    const typeFindings = findingByType.get(type);
+    if (typeFindings?.length) return [type, {
+      status: typeFindings.some((finding) => finding.status === "SUSPECTED") ? "SUSPECTED" as const : "REVIEW_NEEDED" as const,
+      reason: [...new Set(typeFindings.map((finding) => finding.reason))].join(" · "),
+      evidenceIds: [...new Set(typeFindings.flatMap((finding) => finding.evidenceIds ?? ids(finding.evidence)))],
     }];
     const reviewCandidate = reviewCandidates.find((candidate) => candidate.ruleType === type);
     if (reviewCandidate) return [type, {
@@ -90,13 +101,20 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
       evidenceIds: reviewCandidate.evidenceIds,
     }];
     if (type === "CANCELLATION_OBSTRUCTION") {
+      const assessment = assessCancellationObstruction(surfaceObservations, crawledPages);
+      if (assessment) return [type, assessment];
       const subscription = observedSurface("SUBSCRIPTION");
       const cancellation = observedSurface("CANCELLATION");
       if (subscription.length && cancellation.length) return [type, {
         status: "NOT_TESTED" as const,
-        reason: "구독과 해지 화면은 찾았지만 실제 단계 수와 접근성을 비교할 판정기를 아직 연결하지 않았습니다.",
+        reason: "구독과 해지 화면은 찾았지만 같은 서비스의 온라인 가입 화면·해지 선택지·단계 수를 함께 확인하지 못했습니다.",
         evidenceIds: [...subscription, ...cancellation].map(({ evidenceId }) => evidenceId),
       }];
+    }
+    if (type === "BAIT_SELLING") {
+      const exposure = firstPriceExposure ?? (priceLedger?.firstPriceExposure?.status === "OBSERVED" ? priceLedger.firstPriceExposure as FirstPriceExposure : undefined);
+      const assessment = assessBaitSelling(exposure, snapshots);
+      if (assessment) return [type, assessment];
     }
     const requirement = requirements[type];
     if (type === "SNEAKY_CART_ADD" && snapshots.find(({ stage }) => stage === "cart")?.cartItemCount === undefined) {
@@ -126,9 +144,45 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
         evidenceIds: evidenceFor(type),
       }];
     }
-    if (ruleDecisionModes[type] === "BASIC_ENGINE" && !completeEngineRules.has(type)) return [type, {
+    if (type === "MISDIRECTED_HIERARCHY") {
+      const assessments = snapshots.filter((snapshot) => snapshot.stage === "checkout").flatMap((snapshot) => {
+        const result = assessMisdirectedHierarchy(snapshot);
+        return result ? [result] : [];
+      });
+      if (assessments.length && assessments.every(({ status }) => status === "NOT_OBSERVED")) return [type, {
+        status: "NOT_OBSERVED" as const,
+        reason: assessments.map(({ reason }) => reason).join(" · "),
+        evidenceIds: [...new Set(assessments.flatMap(({ evidenceIds }) => evidenceIds))],
+      }];
+      return [type, {
+        status: "NOT_TESTED" as const,
+        reason: "주문서에서 같은 결정을 다루는 수락·거절 선택지의 위치·크기·대비·키보드 접근 정보를 짝지어 확인하지 못했습니다.",
+        evidenceIds: evidenceFor(type),
+      }];
+    }
+    if (type === "PRICE_COMPARISON_OBSTRUCTION") {
+      const assessment = assessPriceComparison(snapshots);
+      if (assessment) return [type, assessment];
+      return [type, {
+        status: "NOT_TESTED" as const,
+        reason: "동일 상품의 단위·수량·옵션·필수 비용과 상품 화면 및 주문서의 총액을 같은 조건으로 대조할 증거가 부족합니다.",
+        evidenceIds: evidenceFor(type),
+      }];
+    }
+    if (type === "BAIT_SELLING") return [type, {
       status: "NOT_TESTED" as const,
-      reason: "필요한 화면은 수집했지만 이 유형의 기본 엔진 판정기를 아직 연결하지 않았습니다.",
+      reason: "목록에서 선택한 상품의 광고 조건과 같은 상품의 상세·구매 가능 조건을 연결해 확인하지 못했습니다.",
+      evidenceIds: evidenceFor(type),
+    }];
+    if (type === "PRESELECTION" && !snapshots.some((snapshot) => snapshot.options.length || snapshot.precheckedSignals?.length || snapshot.decisionControls?.length)) return [type, {
+      status: "NOT_TESTED" as const,
+      reason: "상품·주문서 화면에서 선택 가능한 옵션과 동의 항목의 초기 상태를 확인할 증거가 없습니다.",
+      evidenceIds: evidenceFor(type),
+    }];
+    if (type === "DRIP_PRICING" && !snapshots.some((snapshot) => snapshot.stage === "product" && snapshot.priceLines.length)
+      || type === "DRIP_PRICING" && !snapshots.some((snapshot) => snapshot.stage === "checkout" && snapshot.priceLines.length)) return [type, {
+      status: "NOT_TESTED" as const,
+      reason: "상품 화면과 주문서의 가격·필수 비용 표시를 대조할 가격 증거가 부족합니다.",
       evidenceIds: evidenceFor(type),
     }];
     if (ruleDecisionModes[type] === "AI_CONTEXT") return [type, {

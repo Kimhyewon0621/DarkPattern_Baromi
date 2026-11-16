@@ -36,6 +36,7 @@ export default async function DemoPage({ params, searchParams }: Props) {
       <div className="demo-note">바로미가 위험 신호를 설명하기 위한 예시 화면입니다. 실제 쇼핑몰 결제와 연결되지 않습니다.</div>
       <section className="demo-card"><p className="demo-kicker">{risky ? "위험 신호 예시" : "정상 흐름 예시"} · {stage === "product" ? "상품 상세" : stage === "cart" ? "장바구니" : "주문서"}</p>
       <h1>{title}</h1>
+      {risky && product && <p className="demo-urgency">특가 종료까지 04:45</p>}
       <ul className="demo-price" aria-label="가격 내역">
         <li>상품가 {won(productPrice)}</li>
         {!product && giftSelected && <li>선물 포장 {won(giftPrice)}</li>}

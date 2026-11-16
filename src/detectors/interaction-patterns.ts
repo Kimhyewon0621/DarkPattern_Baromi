@@ -8,8 +8,8 @@ export function detectForcedAction(blocker: JourneyBlocker | null, snapshots: Sn
   const evidence = snapshots.find(({ stage }) => stage === blocker.stage);
   if (!evidence) return [];
   return [{
-    type: "FORCED_ACTION", status: "SUSPECTED", ruleVersion: "1", stage: blocker.stage,
-    reason: "현재 조사한 구매 경로에서 다음 단계 전에 인증을 요구했습니다. 비회원 대체 경로가 있는지는 이번 실행에서 확인하지 못했습니다.",
+    type: "FORCED_ACTION", status: "REVIEW_NEEDED", ruleVersion: "2", stage: blocker.stage,
+    reason: "이 구매 경로에서 인증 화면에 도달했습니다. 비회원으로 계속 구매할 수 있는 대체 경로가 있는지는 확인하지 못했습니다.",
     evidence: [evidence], evidenceIds: evidenceIds([evidence]),
   }];
 }

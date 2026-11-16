@@ -157,6 +157,14 @@ test("웹에서 진단하고 증거를 확인한 후 같은 조건으로 재진�
   expect(downloadedReport.ruleCoverage.PRESELECTION).toMatchObject({ decisionMode: "BASIC_ENGINE", status: "SUSPECTED" });
   expect(downloadedReport.reviewCandidates).toEqual(expect.arrayContaining([expect.objectContaining({ ruleType: "URGENCY_SCARCITY" })]));
   expect(Object.values(downloadedReport.summary).reduce((sum: number, count: any) => sum + count, 0)).toBe(16);
+  expect(Object.keys(downloadedReport.ruleCoverage)).toHaveLength(16);
+  expect(Object.values(downloadedReport.ruleCoverage).every((item: any) =>
+    typeof item.reason === "string" && item.reason.length > 0 && Array.isArray(item.evidenceIds))).toBe(true);
+  expect(downloadedReport.phaseResults.product).toMatchObject({ status: "COVERED", durationMs: expect.any(Number), evidenceIds: expect.any(Array) });
+  const viewedReport = await (await page.request.get(origin + "/api/v1/scans/" + baselineScanId + "/report")).json();
+  expect(viewedReport.ruleCoverage).toEqual(downloadedReport.ruleCoverage);
+  expect(viewedReport.phaseResults).toEqual(downloadedReport.phaseResults);
+  expect(viewedReport.reviewCandidates).toEqual(downloadedReport.reviewCandidates);
   expect((await page.request.post(origin + "/api/v1/scans/" + baselineScanId + "/ai-review", { data: {} })).status()).toBe(402);
   execFileSync("npx", ["prisma", "db", "execute", "--stdin"], {
     cwd: process.cwd(), env: process.env,
