@@ -328,7 +328,16 @@ export function buildRuleCoverage({ findings, snapshots, surfaceObservations = [
     // pages, absence of that signal is NOT_OBSERVED instead of a generic
     // "insufficient evidence" result. Keep NOT_TESTED for scans that did not
     // finish reading any pages, where absence cannot be established at all.
-    const resolved = result.status === "NOT_TESTED" && crawlHasObservedEvidence
+    // A completed site crawl does not replace rule-specific evidence. In
+    // particular, preselection needs a complete inventory of the pre-auth
+    // choice controls; hierarchy needs comparable controls; and surface rules
+    // need their corresponding surface. Keep those explicit coverage gaps as
+    // NOT_TESTED instead of letting unrelated pages erase them.
+    const hasRuleSpecificCoverage = covered(requirements[type].stages, requirements[type].surfaces ?? [], requirements[type].controlStages ?? [])
+      && (type !== "PRESELECTION" || preAuthControlsComplete)
+      && (type !== "MISDIRECTED_HIERARCHY" || snapshots.some((snapshot) => snapshot.decisionControls !== undefined)
+        || crawledPages.some((page) => page.interactiveInventoryComplete === true && page.domText?.some((entry) => entry.region)));
+    const resolved = result.status === "NOT_TESTED" && crawlHasObservedEvidence && hasRuleSpecificCoverage
       ? {
         ...result,
         status: "NOT_OBSERVED" as const,

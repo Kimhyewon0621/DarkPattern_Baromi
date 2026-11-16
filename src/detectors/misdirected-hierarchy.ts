@@ -82,7 +82,9 @@ export function assessCrawledExitHierarchy(pages: CrawledSitePage[]): { status: 
       const sizeRatio = targetSize > 0 && peerSize ? targetSize / peerSize : null;
       const contrastRatioToPeers = targetContrast !== null && peerContrast ? targetContrast / peerContrast : null;
       const contrastSignal = targetContrast !== null && targetContrast < 3 && contrastRatioToPeers !== null && contrastRatioToPeers <= 0.7;
-      const severeSizeSignal = sizeRatio !== null && sizeRatio <= 0.6;
+      // A 10px logout label next to 16px peer controls is a measurable
+      // difference (0.625 ratio) and should be retained for review.
+      const severeSizeSignal = sizeRatio !== null && sizeRatio <= 0.65;
       if (!severeSizeSignal || !contrastSignal) continue;
       assessments.push({
         status: "SUSPECTED",

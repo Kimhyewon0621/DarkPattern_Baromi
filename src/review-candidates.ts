@@ -14,7 +14,7 @@ export type ReviewCandidate = {
   evidenceIds: string[];
   ruleType?: Finding["type"];
   /** Used for deterministic crawl assessments that should not be sent to AI review. */
-  findingStatus?: "SUSPECTED";
+  findingStatus?: "SUSPECTED" | "REVIEW_NEEDED";
   observedFacts?: string[];
   missingInformation?: string[];
 };
@@ -62,10 +62,13 @@ const trialPattern = /무료\s*체험|\d+\s*일\s*체험|첫\s*달\s*무료|체�
 const recurringChargePattern = /자동\s*(?:결제|연장|갱신)|(?:매월|월마다|익월부터|월\s*\d+\s*회)|정기\s*결제|renew(?:al|s)?|recurr(?:ing)?\s*(?:charge|billing)|billed\s*monthly/i;
 
 function disguisedAdFacts(lines: string[]) {
-  if (lines.some((line) => adDisclosurePattern.test(line))) return [];
   if (!lines.some((line) => recommendationPlacementPattern.test(line)) ||
-      !lines.some((line) => commerceCuePattern.test(line))) return [];
-  return lines.filter((line) => recommendationPlacementPattern.test(line) || commerceCuePattern.test(line)).slice(0, 8);
+      !lines.some((line) => commerceCuePattern.test(line) || /상품|제품|후기|리뷰|콘텐츠/i.test(line))) return [];
+  // Disclosure wording is evidence for contextual review too: the question is
+  // whether it is clear and associated with the promoted item, not whether the
+  // page contains the word "광고" somewhere.
+  return lines.filter((line) => recommendationPlacementPattern.test(line) || commerceCuePattern.test(line)
+    || /상품|제품|후기|리뷰|콘텐츠|광고|협찬|유료\s*제공|제공받|sponsored|paid\s*partnership|advertisement/i.test(line)).slice(0, 8);
 }
 
 function falseDiscountFacts(lines: string[]) {
@@ -100,7 +103,7 @@ function factsForRule(type: RuleType, snapshot: Snapshot): string[] {
     case "CONFIRM_SHAMING":
       return controls.filter((line) => confirmShamingPattern.test(line)).slice(0, 8);
     case "TRICK_QUESTION":
-      return controls.filter((line) => trickQuestionPattern.test(line)).slice(0, 8);
+      return controls.filter((line) => trickQuestionPattern.test(line) || /동의|수신|마케팅|광고/i.test(line)).slice(0, 8);
     case "HIDDEN_SUBSCRIPTION":
       return hiddenSubscriptionFacts([...(snapshot.textLines ?? []), ...options]);
     default:
@@ -111,7 +114,8 @@ function factsForRule(type: RuleType, snapshot: Snapshot): string[] {
 function surfaceFactsForRule(type: RuleType, surface: SurfaceObservation): string[] {
   const lines = [surface.title, ...surface.text.split(/\n+/)].map((line) => line.trim()).filter(Boolean);
   if (type === "DISGUISED_AD") return disguisedAdFacts(lines);
-  if (type === "FALSE_RECOMMENDATION") return lines.filter((line) => recommendationClaimPattern.test(line)).slice(0, 8);
+  if (type === "FALSE_RECOMMENDATION") return lines.filter((line) => recommendationClaimPattern.test(line)
+    || (recommendationPlacementPattern.test(line) && /상품|제품|후기|리뷰|추천/i.test(line))).slice(0, 8);
   if (type === "HIDDEN_SUBSCRIPTION") return hiddenSubscriptionFacts(lines);
   return [];
 }
@@ -169,7 +173,7 @@ export function collectCrawlRuleCandidates(pages: CrawledSitePage[]): ReviewCand
       id: `review:rule:misdirected_hierarchy:${page.evidenceId}`, kind: "VISUAL_ACCESSIBILITY" as const, stage: "surface" as const,
       text: hierarchy.reason, reason: "같은 내비게이션 안에서 계정 종료 링크와 동급 링크의 시각적 차이가 측정됐습니다.",
       evidenceIds: [hierarchy.evidenceId], ruleType: "MISDIRECTED_HIERARCHY" as const,
-      findingStatus: hierarchy.status,
+      findingStatus: page.interactiveInventoryComplete === true ? hierarchy.status : "REVIEW_NEEDED" as const,
       observedFacts: [hierarchy.reason], missingInformation: ["이 링크의 중요도와 다른 탐색 동작 간 실제 기능 차이"],
     };
     return {
